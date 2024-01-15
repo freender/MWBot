@@ -45,6 +45,6 @@ def send_welcome(message):
 	api.login(KUMA_LOGIN,KUMA_PASSWORD)
 	api.pause_maintenance(KUMA_MW_ID)
 	api.disconnect()	
-	bot.send_message(chat_id=CHAT_ID, text="NAS: Server Status \nMaintenance window has been completed.  This may take awhile")
+	bot.send_message(chat_id=CHAT_ID, text="NAS: Server Status \nMaintenance window has been completed")
 
 bot.infinity_polling()
