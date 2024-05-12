@@ -52,7 +52,7 @@ def send_welcome(message):
 	bot.reply_to(message, "MW has been completed. Sev1 chat has been notified")
 	api = UptimeKumaApi(KUMA_HOST)
 	api.login(KUMA_LOGIN,KUMA_PASSWORD)
-	api.pause_maintenance(KUMA_MW_ID)
+	api.resume_maintenance(KUMA_MW_ID)
 	api.disconnect()	
 	bot.send_message(chat_id=CHAT_ID, text="NAS: Server Status \nMaintenance window has been started.  \nThis may take awhile")
 
