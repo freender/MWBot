@@ -29,14 +29,14 @@ def send_welcome(message):
 	api.pause_maintenance(KUMA_MW_ID)
 	api.disconnect()	
 
-@bot.message_handler(commands=['firware_mw'])
+@bot.message_handler(commands=['firmware_mw'])
 def send_welcome(message):
 	bot.reply_to(message, "MW has been started. Sev1 chat has been notified")
 	api = UptimeKumaApi(KUMA_HOST)
 	api.login(KUMA_LOGIN,KUMA_PASSWORD)
 	api.resume_maintenance(KUMA_MW_ID)
 	api.disconnect()
-	bot.send_message(chat_id=CHAT_ID, text="NAS: Server Status \nFirware update has been started. \nETA - 15 minutes")
+	bot.send_message(chat_id=CHAT_ID, text="NAS: Server Status \nFirmware update has been started. \nETA - 15 minutes")
 
 @bot.message_handler(commands=['reboot_mw'])
 def send_welcome(message):
