@@ -19,7 +19,7 @@ def send_welcome(message):
 	if message.chat.id != int(CHAT_ID):
 	    bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:
- 	    bot.reply_to(message, "Silent MW has been started")
+	    bot.reply_to(message, "Silent MW has been started")
 	    api = UptimeKumaApi(KUMA_HOST)
 	    api.login(KUMA_LOGIN,KUMA_PASSWORD)
 	    api.resume_maintenance(KUMA_MW_ID)
