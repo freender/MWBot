@@ -1,5 +1,6 @@
 import telebot
 import os
+from modules import modules
 from uptime_kuma_api import UptimeKumaApi
 
 #Read ENV Variables
