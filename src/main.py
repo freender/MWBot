@@ -21,14 +21,14 @@ def command_start(message):
         cid, "Welcome to freender_bot !\nType /help to find all commands.")
 
 
-#@bot.message_handler(commands=['help'])
-#def command_help(message):
-#    cid = message.chat.id
-#    help_text = "The following commands are available: \n"
-#    for key in modules.COMMANDS:
-#        help_text += '/' + key + ': '
-#        help_text += modules.COMMANDS[key] + '\n'
-#    bot.send_message(cid, help_text)
+@bot.message_handler(commands=['help'])
+def command_help(message):
+    cid = message.chat.id
+    help_text = "The following commands are available: \n"
+    for key in modules.COMMANDS:
+        help_text += '/' + key + ': '
+        help_text += modules.COMMANDS[key] + '\n'
+    bot.send_message(cid, help_text)
 
 @bot.message_handler(commands=['start_silent'])
 def send_welcome(message):
