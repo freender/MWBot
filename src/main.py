@@ -18,7 +18,7 @@ bot = telebot.TeleBot(TOKEN)
 def command_start(message):
     cid = message.chat.id
     bot.send_message(
-        cid, "Welcome to putuwaw_bot!\nType /help to find all commands.")
+        cid, "Welcome to freender_bot !\nType /help to find all commands.")
 
 
 #@bot.message_handler(commands=['help'])
