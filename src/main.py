@@ -9,6 +9,7 @@ KUMA_LOGIN = os.environ['KUMA_LOGIN']
 KUMA_PASSWORD = os.environ['KUMA_PASSWORD']
 KUMA_MW_ID = os.environ['KUMA_MW_ID']
 CHAT_ID = os.environ['CHAT_ID']
+OWNER = os.environ['OWNER']
 
 #Instantiate telegram bot
 bot = telebot.TeleBot(TOKEN)
@@ -16,7 +17,7 @@ bot = telebot.TeleBot(TOKEN)
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
 	cid = message.chat.id
-	if message.chat.id != int(CHAT_ID):
+	if message.chat.id != int(OWNER):
 	    bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:
 	    bot.reply_to(message, "Silent MW has been started")
@@ -27,7 +28,7 @@ def send_welcome(message):
 
 @bot.message_handler(commands=['stop'])
 def send_welcome(message):
-	if message.chat.id != int(CHAT_ID):
+	if message.chat.id != int(OWNER):
 	    bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
 	    bot.reply_to(message, "Silent MW has been completed")
@@ -38,7 +39,7 @@ def send_welcome(message):
 
 @bot.message_handler(commands=['firmware_mw'])
 def send_welcome(message):
-	if message.chat.id != int(CHAT_ID):
+	if message.chat.id != int(OWNER):
 	    bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
 	    bot.reply_to(message, "MW has been started. Sev1 chat has been notified")
@@ -50,7 +51,7 @@ def send_welcome(message):
 
 @bot.message_handler(commands=['reboot_mw'])
 def send_welcome(message):
-	if message.chat.id != int(CHAT_ID):
+	if message.chat.id != int(OWNER):
 	    bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
 	    bot.reply_to(message, "MW has been started. Sev1 chat has been notified")
@@ -62,7 +63,7 @@ def send_welcome(message):
 
 @bot.message_handler(commands=['start_mw'])
 def send_welcome(message):
-	if message.chat.id != int(CHAT_ID):
+	if message.chat.id != int(OWNER):
 	    bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
 	    bot.reply_to(message, "MW has been completed. Sev1 chat has been notified")
@@ -74,7 +75,7 @@ def send_welcome(message):
 
 @bot.message_handler(commands=['stop_mw'])
 def send_welcome(message):
-	if message.chat.id != int(CHAT_ID):
+	if message.chat.id != int(OWNER):
 	    bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
 	    bot.reply_to(message, "MW has been completed. Sev1 chat has been notified")
