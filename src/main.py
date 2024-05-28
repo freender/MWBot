@@ -15,6 +15,22 @@ OWNER = os.environ['OWNER']
 bot = telebot.TeleBot(TOKEN)
 
 @bot.message_handler(commands=['start'])
+def command_start(message):
+    cid = message.chat.id
+    bot.send_message(
+        cid, "Welcome to putuwaw_bot!\nType /help to find all commands.")
+
+
+#@bot.message_handler(commands=['help'])
+#def command_help(message):
+#    cid = message.chat.id
+#    help_text = "The following commands are available: \n"
+#    for key in modules.COMMANDS:
+#        help_text += '/' + key + ': '
+#        help_text += modules.COMMANDS[key] + '\n'
+#    bot.send_message(cid, help_text)
+
+@bot.message_handler(commands=['start_silent'])
 def send_welcome(message):
 	cid = message.chat.id
 	if message.chat.id != int(OWNER):
@@ -26,7 +42,7 @@ def send_welcome(message):
 	    api.resume_maintenance(KUMA_MW_ID)
 	    api.disconnect()
 
-@bot.message_handler(commands=['stop'])
+@bot.message_handler(commands=['stop_silent'])
 def send_welcome(message):
 	if message.chat.id != int(OWNER):
 	    bot.reply_to(message, "Sorry you are not allowed to use this command!")
@@ -84,5 +100,11 @@ def send_welcome(message):
 	    api.pause_maintenance(KUMA_MW_ID)
 	    api.disconnect()	
 	    bot.send_message(chat_id=CHAT_ID, text="NAS: Server Status \nMaintenance window has been completed")
+
+@bot.message_handler(func=lambda message: modules.is_command(message.text))
+def command_unknown(message):
+    command = str(message.text).split()[0]
+    bot.reply_to(
+        message, "Sorry, {} command not found!\nPlease use /help to find all commands.".format(command))
 
 bot.infinity_polling()
