@@ -10,16 +10,20 @@ KUMA_PASSWORD = os.environ['KUMA_PASSWORD']
 KUMA_MW_ID = os.environ['KUMA_MW_ID']
 CHAT_ID = os.environ['CHAT_ID']
 
-#Intantiate telegram bot instance
+#Instantiate telegram bot
 bot = telebot.TeleBot(TOKEN)
 
 @bot.message_handler(commands=['start'])
 def send_welcome(message):
-	bot.reply_to(message, "Silent MW has been started")
-	api = UptimeKumaApi(KUMA_HOST)
-	api.login(KUMA_LOGIN,KUMA_PASSWORD)
-	api.resume_maintenance(KUMA_MW_ID)
-	api.disconnect()
+	cid = message.chat.id
+	if message.chat.id != int(CHAT_ID):
+            bot.reply_to(message, "Sorry you are not allowed to use this command!")
+  	else:
+ 	    bot.reply_to(message, "Silent MW has been started")
+	    api = UptimeKumaApi(KUMA_HOST)
+	    api.login(KUMA_LOGIN,KUMA_PASSWORD)
+	    api.resume_maintenance(KUMA_MW_ID)
+	    api.disconnect()
 
 @bot.message_handler(commands=['stop'])
 def send_welcome(message):
