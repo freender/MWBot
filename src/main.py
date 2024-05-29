@@ -79,7 +79,7 @@ def command_reboot_mw(message):
 	    bot.send_message(chat_id=CHAT_ID, text="NAS: Server Status \nNAS is going to be rebooted. \nETA - 10 minutes")
 
 @bot.message_handler(commands=['generic_mw'])
-def command_start_mw(message):
+def command_generic_mw(message):
 	if message.chat.id != int(OWNER):
 	    bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
