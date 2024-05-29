@@ -6,7 +6,7 @@ COMMANDS = {
 'stop_silent': 'Stop Silent MW',
 'firmware_mw': 'Start Firmware MW and notify Sev1 chat',
 'reboot_mw': 'Start Reboot MW and notify Sev1 chat',
-'start_mw': 'Start MW and notify Sev1 chat',
+'generic_mw': 'Start MW and notify Sev1 chat',
 'stop_mw': 'Stop MW and notify Sev1 chat',
 }
 
