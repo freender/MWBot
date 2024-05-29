@@ -18,4 +18,5 @@ services:
       - KUMA_PASSWORD=${UPTIME_PASSWORD} # UptimeKuma Password
       - KUMA_MW_ID=3 # ID of MW you would like to start
       - CHAT_ID=${TELEGRAM_CHATID} # Set telegram chat id
+      - OWNER=${OWNER} # Set telegram user owner id
 ```
