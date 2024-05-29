@@ -32,7 +32,7 @@ def command_help(message):
     bot.send_message(cid, help_text)
 
 @bot.message_handler(commands=['start_silent'])
-def send_welcome(message):
+def command_start_silent(message):
 	cid = message.chat.id
 	if message.chat.id != int(OWNER):
 	    bot.reply_to(message, "Sorry you are not allowed to use this command!")
@@ -44,7 +44,7 @@ def send_welcome(message):
 	    api.disconnect()
 
 @bot.message_handler(commands=['stop_silent'])
-def send_welcome(message):
+def command_stop_silent(message):
 	if message.chat.id != int(OWNER):
 	    bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
@@ -55,7 +55,7 @@ def send_welcome(message):
 	    api.disconnect()	
 
 @bot.message_handler(commands=['firmware_mw'])
-def send_welcome(message):
+def command_firmware_mw(message):
 	if message.chat.id != int(OWNER):
 	    bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
@@ -67,7 +67,7 @@ def send_welcome(message):
 	    bot.send_message(chat_id=CHAT_ID, text="NAS: Server Status \nFirmware update has been started. \nETA - 15 minutes")
 
 @bot.message_handler(commands=['reboot_mw'])
-def send_welcome(message):
+def command_reboot_mw(message):
 	if message.chat.id != int(OWNER):
 	    bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
@@ -78,8 +78,8 @@ def send_welcome(message):
 	    api.disconnect()
 	    bot.send_message(chat_id=CHAT_ID, text="NAS: Server Status \nNAS is going to be rebooted. \nETA - 10 minutes")
 
-@bot.message_handler(commands=['start_mw'])
-def send_welcome(message):
+@bot.message_handler(commands=['generic_mw'])
+def command_start_mw(message):
 	if message.chat.id != int(OWNER):
 	    bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
@@ -91,7 +91,7 @@ def send_welcome(message):
 	    bot.send_message(chat_id=CHAT_ID, text="NAS: Server Status \nMaintenance window has been started.  \nThis may take awhile")
 
 @bot.message_handler(commands=['stop_mw'])
-def send_welcome(message):
+def command_stop_mw(message):
 	if message.chat.id != int(OWNER):
 	    bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
