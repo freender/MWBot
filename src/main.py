@@ -56,7 +56,7 @@ def command_reboot_mw(message):
 
 @bot.message_handler(commands=['generic_mw'])
 def command_generic_mw(message):
-	if not is_owner(message):
+	if not modules.is_owner(message):
 		bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
 		bot.reply_to(message, "MW has been completed. Sev1 chat has been notified")
