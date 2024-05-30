@@ -1,5 +1,7 @@
 import os
 import re
+import cfg
+import telebot
 from uptime_kuma_api import UptimeKumaApi
     
 
@@ -16,22 +18,17 @@ def is_command(string):
     pattern = r"^\/.*$"
     return bool(re.match(pattern, string))
 
+def is_owner(message):
+    return bool(message.chat.id == cfg.OWNER)
+
 def start_mw():
-    KUMA_HOST = os.environ['KUMA_HOST']
-    KUMA_LOGIN = os.environ['KUMA_LOGIN']
-    KUMA_PASSWORD = os.environ['KUMA_PASSWORD']
-    KUMA_MW_ID = os.environ['KUMA_MW_ID']
-    api = UptimeKumaApi(KUMA_HOST)
-    api.login(KUMA_LOGIN,KUMA_PASSWORD)
-    api.resume_maintenance(KUMA_MW_ID)
+    api = UptimeKumaApi(cfg.KUMA_HOST)
+    api.login(cfg.KUMA_LOGIN,cfg.KUMA_PASSWORD)
+    api.resume_maintenance(cfg.KUMA_MW_ID)
     api.disconnect()
 
 def stop_mw():
-    KUMA_HOST = os.environ['KUMA_HOST']
-    KUMA_LOGIN = os.environ['KUMA_LOGIN']
-    KUMA_PASSWORD = os.environ['KUMA_PASSWORD']
-    KUMA_MW_ID = os.environ['KUMA_MW_ID']
-    api = UptimeKumaApi(KUMA_HOST)
-    api.login(KUMA_LOGIN,KUMA_PASSWORD)
-    api.pause_maintenance(KUMA_MW_ID)
+    api = UptimeKumaApi(cfg.KUMA_HOST)
+    api.login(cfg.KUMA_LOGIN,cfg.KUMA_PASSWORD)
+    api.pause_maintenance(cfg.KUMA_MW_ID)
     api.disconnect()

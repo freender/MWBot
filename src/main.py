@@ -1,15 +1,10 @@
 import telebot
-import os
+import cfg
 from modules import modules
 from uptime_kuma_api import UptimeKumaApi
 
-#Read ENV Variables
-TOKEN = os.environ['TOKEN']
-CHAT_ID = os.environ['CHAT_ID']
-OWNER = os.environ['OWNER']
-
 #Instantiate telegram bot
-bot = telebot.TeleBot(TOKEN)
+bot = telebot.TeleBot(cfg.TOKEN)
 
 @bot.message_handler(commands=['start'])
 def command_start(message):
@@ -28,7 +23,7 @@ def command_help(message):
 
 @bot.message_handler(commands=['start_silent'])
 def command_start_silent(message):
-	if message.chat.id != int(OWNER):
+	if not modules.is_owner(message):
 		bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:
 		bot.reply_to(message, "Silent MW has been started")
@@ -36,7 +31,7 @@ def command_start_silent(message):
 
 @bot.message_handler(commands=['stop_silent'])
 def command_stop_silent(message):
-	if message.chat.id != int(OWNER):
+	if not modules.is_owner(message):
 		bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
 		bot.reply_to(message, "Silent MW has been completed")
@@ -44,7 +39,7 @@ def command_stop_silent(message):
 
 @bot.message_handler(commands=['firmware_mw'])
 def command_firmware_mw(message):
-	if message.chat.id != int(OWNER):
+	if not modules.is_owner(message):
 		bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
 		bot.reply_to(message, "MW has been started. Sev1 chat has been notified")
@@ -52,30 +47,30 @@ def command_firmware_mw(message):
 
 @bot.message_handler(commands=['reboot_mw'])
 def command_reboot_mw(message):
-	if message.chat.id != int(OWNER):
+	if not modules.is_owner(message):
 		bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
 		bot.reply_to(message, "MW has been started. Sev1 chat has been notified")
 		modules.start_mw()
-		bot.send_message(chat_id=CHAT_ID, text="NAS: Server Status \nNAS is going to be rebooted. \nETA - 10 minutes")
+		bot.send_message(chat_id=cfg.CHAT_ID, text="NAS: Server Status \nNAS is going to be rebooted. \nETA - 10 minutes")
 
 @bot.message_handler(commands=['generic_mw'])
 def command_generic_mw(message):
-	if message.chat.id != int(OWNER):
+	if not is_owner(message):
 		bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
 		bot.reply_to(message, "MW has been completed. Sev1 chat has been notified")
 		modules.start_mw()	
-		bot.send_message(chat_id=CHAT_ID, text="NAS: Server Status \nMaintenance window has been started.  \nThis may take awhile")
+		bot.send_message(chat_id=cfg.CHAT_ID, text="NAS: Server Status \nMaintenance window has been started.  \nThis may take awhile")
 
 @bot.message_handler(commands=['stop_mw'])
 def command_stop_mw(message):
-	if message.chat.id != int(OWNER):
+	if not modules.is_owner(message):
 		bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
 		bot.reply_to(message, "MW has been completed. Sev1 chat has been notified")
 		modules.stop_mw()
-		bot.send_message(chat_id=CHAT_ID, text="NAS: Server Status \nMaintenance window has been completed")
+		bot.send_message(chat_id=cfg.CHAT_ID, text="NAS: Server Status \nMaintenance window has been completed")
 
 @bot.message_handler(func=lambda message: modules.is_command(message.text))
 def command_unknown(message):
