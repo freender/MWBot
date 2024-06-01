@@ -1,10 +1,12 @@
 import telebot
 import cfg
+import requests
 from modules import modules
 from uptime_kuma_api import UptimeKumaApi
 
 #Instantiate telegram bot
 bot = telebot.TeleBot(cfg.TOKEN)
+#bot = telebot.TeleBot(cfg.TOKEN_STAGING)
 
 @bot.message_handler(commands=['start'])
 def command_start(message):
@@ -71,6 +73,29 @@ def command_stop_mw(message):
 		bot.reply_to(message, "MW has been completed. Sev1 chat has been notified")
 		modules.stop_mw()
 		bot.send_message(chat_id=cfg.CHAT_ID, text="NAS: Server Status \nMaintenance window has been completed")
+
+
+@bot.message_handler(commands=['ip'])
+def command_allow_cdn(message):
+	if not modules.is_auth_user(message):
+		bot.reply_to(message, "Sorry you are not allowed to use this command!")
+	else:
+		bot.send_chat_action(message.chat.id, 'typing')
+		sent = bot.send_message(message.chat.id, "Send IP address")
+		bot.register_next_step_handler(sent, ip)
+
+
+def ip(message):
+	ip=message.text
+	if not modules.is_valid_ip(ip):
+		bot.send_message(message.chat.id, "Invalid IP address format!\nDoublecheck and rerun /ip command")	
+	else:	
+		asn = modules.get_asn_from_ip(ip)
+		if asn == "None":
+			bot.send_message(message.chat.id, "ASN for this IP is not found!\nDoublecheck and rerun /ip command")		
+		else:
+			result = modules.add_asn_to_firewall_rule(asn)
+			bot.send_message(message.chat.id, text=result)
 
 @bot.message_handler(func=lambda message: modules.is_command(message.text))
 def command_unknown(message):
