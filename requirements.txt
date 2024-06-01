@@ -1,3 +1,2 @@
 pyTelegramBotAPI
 uptime-kuma-api
-cloudflare==2.19.*
