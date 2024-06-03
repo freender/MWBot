@@ -1,12 +1,10 @@
 import telebot
 import cfg
-import requests
 from modules import modules
-from uptime_kuma_api import UptimeKumaApi
 
 #Instantiate telegram bot
-bot = telebot.TeleBot(cfg.TOKEN)
-#bot = telebot.TeleBot(cfg.TOKEN_STAGING)
+#bot = telebot.TeleBot(cfg.TOKEN)
+bot = telebot.TeleBot(cfg.TOKEN_STAGING)
 
 @bot.message_handler(commands=['start'])
 def command_start(message):

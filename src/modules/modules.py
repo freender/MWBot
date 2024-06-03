@@ -1,14 +1,14 @@
 import re
 import json
 import requests
-import re
 import cfg
+import logging
 from uptime_kuma_api import UptimeKumaApi
 from uptime_kuma_api import UptimeKumaException
 
 
 COMMANDS = {
-'start': 'Welcome Screen',
+'start': 'Start Screen',
 'ip': 'Allow Plex in unknown place',
 'start_silent': 'Start Silent MW',
 'stop_silent': 'Stop Silent MW',
@@ -23,12 +23,11 @@ def is_command(string):
     return bool(re.match(pattern, string))
 
 def is_owner(message):
-    print(f"AUDIT - Auth attempt for USER: {message.chat.id}")
+    logging.info(f"audit: Auth attempt for USER: {message.chat.id}")
     return bool(message.chat.id == cfg.OWNER)
 
 def is_auth_user(message):
-    print(f"AUDIT - Auth attempt for USER: {message.chat.id}")
-    #print(f"DEBUG - Telegram authorized TELEGRAM_AUTH_USERS: {cfg.TELEGRAM_AUTH_USERS}")
+    logging.info(f"audit: Auth attempt for USER: {message.chat.id}")
     return bool(str(message.chat.id) in cfg.TELEGRAM_AUTH_USERS)
 
 def is_valid_ip(ip):
@@ -58,56 +57,56 @@ def get_asn_from_ip(ip):
         asn = extract_as_number(response.text)
         return asn
     except requests.exceptions.RequestException as e:
-        print(f"An error occurred: {e}")
+        logging.error(f"An error occurred: {e}")
         return None    
 
-def start_mw():
-    api = UptimeKumaApi(cfg.KUMA_HOST)
+def start_mw():    
     try:        
+        api = UptimeKumaApi(cfg.KUMA_HOST)
         api.login(cfg.KUMA_LOGIN, cfg.KUMA_PASSWORD)
         try: 
             api.resume_maintenance(cfg.KUMA_MW_ID)
             result = "MW has been started"            
         except UptimeKumaException as e:
-            print(f"An error occurred while resuming MW: {e}")
+            logging.error(f"An error occurred while resuming MW: {e}")
             result = 'An error occurred while resuming MW'
         finally:
             try:
                 api.disconnect()
             except UptimeKumaException as e:
-                print(f"An error occurred while disconnecting: {e}")
+                logging.error(f"An error occurred while disconnecting: {e}")
                 result = 'An error occurred while disconnecting'
     except UptimeKumaException as e:
-        print(f"An error occurred: {e}")
+        logging.error(f"An error occurred: {e}")
         result = 'Unable to establish connection to Uptime Kuma'       
     return result  
                
         
-def stop_mw():
-    api = UptimeKumaApi(cfg.KUMA_HOST)
+def stop_mw():    
     try:        
+        api = UptimeKumaApi(cfg.KUMA_HOST)
         api.login(cfg.KUMA_LOGIN, cfg.KUMA_PASSWORD)
         try: 
             api.pause_maintenance(cfg.KUMA_MW_ID)
             result = "MW has been completed"            
         except UptimeKumaException as e:
-            print(f"An error occurred while pausing MW: {e}")
+            logging.error(f"An error occurred while pausing MW: {e}")
             result = 'An error occurred while pausing MW'
         finally:
             try:
                 api.disconnect()
             except UptimeKumaException as e:
-                print(f"An error occurred while disconnecting: {e}")
+                logging.error(f"An error occurred while disconnecting: {e}")
                 result = 'An error occurred while disconnecting'
     except UptimeKumaException as e:       
-        print(f"An error occurred: {e}")
+        logging.error(f"An error occurred: {e}")
         result = 'Unable to establish connection to Uptime Kuma'       
     return result
 
 def add_asn_to_firewall_rule(asn):    
     subdomain = cfg.CDN_URL
 
-    # Create the firewall rule data
+    # Update the firewall rule data
     rule_data = {
     "action": "skip",
         "action_parameters": {
@@ -129,13 +128,13 @@ def add_asn_to_firewall_rule(asn):
         response = requests.patch(url, headers=headers, data=json.dumps(rule_data))
         # Check the response status
         if response.status_code == 200:
-            print("Rule updated successfully.")
+            logging.info("Rule updated successfully.")
             result = 'Rule updated successfully.'
         else:
-            print(f"Failed to update rule. Status code: {response.status_code}")
-            print(f"Response text: {response.text}")
+            logging.error(f"Failed to update rule. Status code: {response.status_code}")
+            logging.error(f"Response text: {response.text}")
             result = f"Failed to update rule. Status code: {response.status_code}"
     except Exception as e:
-        print(f"An error occurred: {e}")
+        logging.error(f"An error occurred: {e}")
         result = f"Unexpected error occurred. Check exception message in logs"
     return result

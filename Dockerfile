@@ -1,8 +1,11 @@
-FROM python:3.10-slim
+FROM python:3-slim
 
 WORKDIR /code
 
 COPY ./requirements.txt ./
+
+# Turns off buffering for easier container logging
+ENV PYTHONUNBUFFERED=1
 
 RUN pip install --no-cache-dir -r requirements.txt
 
