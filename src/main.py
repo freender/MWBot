@@ -28,32 +28,33 @@ def command_start_silent(message):
 	if not modules.is_owner(message):
 		bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:
-		bot.reply_to(message, "Silent MW has been started")
-		modules.start_mw()
+		result = modules.start_mw()
+		bot.reply_to(message, result)	
 
 @bot.message_handler(commands=['stop_silent'])
 def command_stop_silent(message):
 	if not modules.is_owner(message):
 		bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
-		bot.reply_to(message, "Silent MW has been completed")
-		modules.stop_mw()
+		result = modules.stop_mw()
+		bot.reply_to(message, result)		
 
 @bot.message_handler(commands=['firmware_mw'])
 def command_firmware_mw(message):
 	if not modules.is_owner(message):
 		bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
-		bot.reply_to(message, "MW has been started. Sev1 chat has been notified")
-		modules.start_mw()
+		result = modules.start_mw()
+		bot.reply_to(message, result + ". Sev1 chat has been notified")		
+		bot.send_message(chat_id=cfg.CHAT_ID, text="NAS: Server Status \nFirmware update. \nETA - 15 minutes")
 
 @bot.message_handler(commands=['reboot_mw'])
 def command_reboot_mw(message):
 	if not modules.is_owner(message):
 		bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
-		bot.reply_to(message, "MW has been started. Sev1 chat has been notified")
-		modules.start_mw()
+		result = modules.start_mw()
+		bot.reply_to(message, result + ". Sev1 chat has been notified")		
 		bot.send_message(chat_id=cfg.CHAT_ID, text="NAS: Server Status \nNAS is going to be rebooted. \nETA - 10 minutes")
 
 @bot.message_handler(commands=['generic_mw'])
@@ -61,8 +62,8 @@ def command_generic_mw(message):
 	if not modules.is_owner(message):
 		bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
-		bot.reply_to(message, "MW has been completed. Sev1 chat has been notified")
-		modules.start_mw()	
+		result = modules.start_mw()
+		bot.reply_to(message, result + ". Sev1 chat has been notified")			
 		bot.send_message(chat_id=cfg.CHAT_ID, text="NAS: Server Status \nMaintenance window has been started.  \nThis may take awhile")
 
 @bot.message_handler(commands=['stop_mw'])
@@ -70,8 +71,8 @@ def command_stop_mw(message):
 	if not modules.is_owner(message):
 		bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:	
-		bot.reply_to(message, "MW has been completed. Sev1 chat has been notified")
-		modules.stop_mw()
+		result = modules.stop_mw()
+		bot.reply_to(message, result + ". Sev1 chat has been notified")
 		bot.send_message(chat_id=cfg.CHAT_ID, text="NAS: Server Status \nMaintenance window has been completed")
 
 

@@ -9,4 +9,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY ./src ./src
 
 
-CMD ["python", "/code/src/main.py", "--reload"]
+CMD ["python","-u", "/code/src/main.py", "--reload"]

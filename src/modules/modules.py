@@ -4,6 +4,7 @@ import requests
 import re
 import cfg
 from uptime_kuma_api import UptimeKumaApi
+from uptime_kuma_api import UptimeKumaException
 
 
 COMMANDS = {
@@ -50,26 +51,58 @@ def extract_as_number(json_string):
         return "None"
 
 def get_asn_from_ip(ip):
-    #TODO: add try catch to http call
-    url='http://ip-api.com/json/{}?fields=as'.format(ip)
-    response=requests.get(url)
-    asn = extract_as_number(response.text)
-    return asn
+    try:
+        url='http://ip-api.com/json/{}?fields=as'.format(ip)
+        response=requests.get(url)
+        response.raise_for_status()  # This will raise an HTTPError if the HTTP request returned an unsuccessful status code
+        asn = extract_as_number(response.text)
+        return asn
+    except requests.exceptions.RequestException as e:
+        print(f"An error occurred: {e}")
+        return None    
 
 def start_mw():
-    #TODO: add try catch to API call
     api = UptimeKumaApi(cfg.KUMA_HOST)
-    api.login(cfg.KUMA_LOGIN,cfg.KUMA_PASSWORD)
-    api.resume_maintenance(cfg.KUMA_MW_ID)
-    api.disconnect()
-
+    try:        
+        api.login(cfg.KUMA_LOGIN, cfg.KUMA_PASSWORD)
+        try: 
+            api.resume_maintenance(cfg.KUMA_MW_ID)
+            result = "MW has been started"            
+        except UptimeKumaException as e:
+            print(f"An error occurred while resuming MW: {e}")
+            result = 'An error occurred while resuming MW'
+        finally:
+            try:
+                api.disconnect()
+            except UptimeKumaException as e:
+                print(f"An error occurred while disconnecting: {e}")
+                result = 'An error occurred while disconnecting'
+    except UptimeKumaException as e:
+        print(f"An error occurred: {e}")
+        result = 'Unable to establish connection to Uptime Kuma'       
+    return result  
+               
+        
 def stop_mw():
-    #TODO: add try catch to API call
     api = UptimeKumaApi(cfg.KUMA_HOST)
-    api.login(cfg.KUMA_LOGIN,cfg.KUMA_PASSWORD)
-    api.pause_maintenance(cfg.KUMA_MW_ID)
-    api.disconnect()
-
+    try:        
+        api.login(cfg.KUMA_LOGIN, cfg.KUMA_PASSWORD)
+        try: 
+            api.pause_maintenance(cfg.KUMA_MW_ID)
+            result = "MW has been completed"            
+        except UptimeKumaException as e:
+            print(f"An error occurred while pausing MW: {e}")
+            result = 'An error occurred while pausing MW'
+        finally:
+            try:
+                api.disconnect()
+            except UptimeKumaException as e:
+                print(f"An error occurred while disconnecting: {e}")
+                result = 'An error occurred while disconnecting'
+    except UptimeKumaException as e:       
+        print(f"An error occurred: {e}")
+        result = 'Unable to establish connection to Uptime Kuma'       
+    return result
 
 def add_asn_to_firewall_rule(asn):    
     subdomain = cfg.CDN_URL
