@@ -23,11 +23,11 @@ def is_command(string):
     return bool(re.match(pattern, string))
 
 def is_owner(message):
-    logging.info(f"audit: Auth attempt for USER: {message.chat.id}")
+    logging.warning(f"audit: Auth attempt for USER: {message.chat.id}")
     return bool(message.chat.id == cfg.OWNER)
 
 def is_auth_user(message):
-    logging.info(f"audit: Auth attempt for USER: {message.chat.id}")
+    logging.warning(f"audit: Auth attempt for USER: {message.chat.id}")
     return bool(str(message.chat.id) in cfg.TELEGRAM_AUTH_USERS)
 
 def is_valid_ip(ip):
