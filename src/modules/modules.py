@@ -23,11 +23,11 @@ def is_command(string):
     return bool(re.match(pattern, string))
 
 def is_owner(message):
-    logging.warning(f"audit: Auth attempt for USER: {message.chat.id}")
+    logging.warning(f"Auth attempt for USER: {message.chat.id}")
     return bool(message.chat.id == cfg.OWNER)
 
 def is_auth_user(message):
-    logging.warning(f"audit: Auth attempt for USER: {message.chat.id}")
+    logging.warning(f"Auth attempt for USER: {message.chat.id}")
     return bool(str(message.chat.id) in cfg.TELEGRAM_AUTH_USERS)
 
 def is_valid_ip(ip):
@@ -62,45 +62,45 @@ def get_asn_from_ip(ip):
 
 def start_mw():    
     try:        
-        api = UptimeKumaApi(cfg.KUMA_HOST)
-        api.login(cfg.KUMA_LOGIN, cfg.KUMA_PASSWORD)
+        api = UptimeKumaApi(cfg.KUMA_HOST)                
         try: 
+            api.login(cfg.KUMA_LOGIN, cfg.KUMA_PASSWORD)
             api.resume_maintenance(cfg.KUMA_MW_ID)
-            result = "MW has been started"            
+            result = "MW has been started"
         except UptimeKumaException as e:
-            logging.error(f"An error occurred while resuming MW: {e}")
-            result = 'An error occurred while resuming MW'
+            result = "An error occurred while resuming"
+            logging.error(result + ": " + str(e))
         finally:
             try:
                 api.disconnect()
             except UptimeKumaException as e:
-                logging.error(f"An error occurred while disconnecting: {e}")
-                result = 'An error occurred while disconnecting'
+                result = "An error occurred while disconnecting"
+                logging.error(result + ": " + str(e))
     except UptimeKumaException as e:
-        logging.error(f"An error occurred: {e}")
-        result = 'Unable to establish connection to Uptime Kuma'       
+        result = "Unable to establish connection to Uptime Kuma"
+        logging.error(result + ": " + str(e))
     return result  
                
         
 def stop_mw():    
     try:        
-        api = UptimeKumaApi(cfg.KUMA_HOST)
-        api.login(cfg.KUMA_LOGIN, cfg.KUMA_PASSWORD)
-        try: 
+        api = UptimeKumaApi(cfg.KUMA_HOST)                
+        try:             
+            api.login(cfg.KUMA_LOGIN, cfg.KUMA_PASSWORD)
             api.pause_maintenance(cfg.KUMA_MW_ID)
             result = "MW has been completed"            
         except UptimeKumaException as e:
-            logging.error(f"An error occurred while pausing MW: {e}")
-            result = 'An error occurred while pausing MW'
+            result = 'An error occurred while pausing MW'            
+            logging.error(result + ": " + str(e))
         finally:
             try:
                 api.disconnect()
             except UptimeKumaException as e:
-                logging.error(f"An error occurred while disconnecting: {e}")
                 result = 'An error occurred while disconnecting'
-    except UptimeKumaException as e:       
-        logging.error(f"An error occurred: {e}")
-        result = 'Unable to establish connection to Uptime Kuma'       
+                logging.error(result + ": " + str(e))
+    except UptimeKumaException as e:
+        result = 'Unable to establish connection to Uptime Kuma'
+        logging.error(result + ": " + str(e))
     return result
 
 def add_asn_to_firewall_rule(asn):    
@@ -128,13 +128,12 @@ def add_asn_to_firewall_rule(asn):
         response = requests.patch(url, headers=headers, data=json.dumps(rule_data))
         # Check the response status
         if response.status_code == 200:
-            logging.info("Rule updated successfully.")
             result = 'Rule updated successfully.'
+            logging.warning(result)
         else:
-            logging.error(f"Failed to update rule. Status code: {response.status_code}")
-            logging.error(f"Response text: {response.text}")
             result = f"Failed to update rule. Status code: {response.status_code}"
+            logging.error(f"{result}: Response text: {response.text}")
     except Exception as e:
-        logging.error(f"An error occurred: {e}")
-        result = f"Unexpected error occurred. Check exception message in logs"
+        result = f"Unexpected error occurred"
+        logging.error(result + ": " + str(e))
     return result
