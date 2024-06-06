@@ -23,11 +23,11 @@ def is_command(string):
     return bool(re.match(pattern, string))
 
 def is_owner(message):
-    logging.warning(f"Auth attempt for USER: {message.chat.id}")
+    logging.warning(f"Auth attempt for CID: {message.chat.id}")
     return bool(message.chat.id == cfg.OWNER)
 
 def is_auth_user(message):
-    logging.warning(f"Auth attempt for USER: {message.chat.id}")
+    logging.warning(f"Auth attempt for CID: {message.chat.id}")
     return bool(str(message.chat.id) in cfg.TELEGRAM_AUTH_USERS)
 
 def is_valid_ip(ip):
@@ -103,8 +103,70 @@ def stop_mw():
         logging.error(result + ": " + str(e))
     return result
 
+
+def get_asns_from_firewall_rule():    
+
+    # Cloudflare API endpoint for updating a WAF rule
+    url = f"https://api.cloudflare.com/client/v4/zones/{cfg.WAF_ZONE}/rulesets/{cfg.WAF_RULESET}"
+
+    # Headers for authentication and content type
+    headers = {
+        'Authorization': "Bearer " + cfg.WAF_TOKEN
+    }
+    
+    try:
+        response = requests.get(url, headers=headers)
+        # Check the response status
+        if response.status_code != 200:
+            result = f"Failed to retrieved the rule. Status code: {response.status_code}"
+            logging.error(f"{result}: Response text: {response.text}")
+            return None
+        
+        response_dict = response.json()
+        rules = response_dict['result']['rules']
+            
+        for rule in rules:
+            if rule.get('id') == cfg.WAF_RULEID:
+                expression = rule.get('expression', '')
+           
+                # Extract ASNs using regular expression
+                asns = re.findall(r'\b\d+\b', expression)
+                logging.warning("Old Rule: " + ' '.join(map(str, asns)))        
+
+                return asns
+    
+            result = 'Rule retrieved successfully.'
+            logging.warning(result)         
+            
+    except Exception as e:
+        result = f"Unexpected error occurred"
+        logging.error(result + ": " + str(e))
+    return None
+
+
+
 def add_asn_to_firewall_rule(asn):    
     subdomain = cfg.CDN_URL
+
+    # Save current firewall ASNs
+    old_asns = get_asns_from_firewall_rule()
+    
+    if old_asns is None:
+        result = "Failed to retrieve existing ASNs from the firewall rule."
+        logging.error(result)
+        return result
+
+    # Check if the ASN already exists in the list
+    if asn in old_asns:
+        result = f"ASN {asn} already exists in the firewall rule."
+        logging.warning(result)
+        return result
+
+    # Add new ASN into the list
+    old_asns.append(asn)
+    # Convert the list to a comma-separated string
+    new_asns = ' '.join(map(str, old_asns))
+    logging.warning("New Rule: " + new_asns)
 
     # Update the firewall rule data
     rule_data = {
@@ -112,7 +174,7 @@ def add_asn_to_firewall_rule(asn):
         "action_parameters": {
             "ruleset": "current"
         },
-        "expression": "(ip.geoip.asnum in {" + asn + "} and http.host eq \"" + subdomain + "\")",
+        "expression": "(ip.geoip.asnum in {" + new_asns + "} and http.host eq \"" + subdomain + "\")",
         "description": "Allow MWBot Whitelist"
     }
 
@@ -128,7 +190,7 @@ def add_asn_to_firewall_rule(asn):
         response = requests.patch(url, headers=headers, data=json.dumps(rule_data))
         # Check the response status
         if response.status_code == 200:
-            result = 'Rule updated successfully.'
+            result = f"ASN {asn} has been sucessfully added to the firewall rule."
             logging.warning(result)
         else:
             result = f"Failed to update rule. Status code: {response.status_code}"
