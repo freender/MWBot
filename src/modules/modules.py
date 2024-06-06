@@ -135,8 +135,8 @@ def get_asns_from_firewall_rule():
 
                 return asns
     
-            result = 'Rule retrieved successfully.'
-            logging.warning(result)         
+        result = 'Rule retrieved successfully.'
+        logging.warning(result)
             
     except Exception as e:
         result = f"Unexpected error occurred"
@@ -157,13 +157,12 @@ def add_asn_to_firewall_rule(asn):
         return result
 
     # Check if the ASN already exists in the list
-    if asn in old_asns:
+    if asn not in old_asns:        
+        old_asns.append(asn)        
+    else:
         result = f"ASN {asn} already exists in the firewall rule."
         logging.warning(result)
-        return result
 
-    # Add new ASN into the list
-    old_asns.append(asn)
     # Convert the list to a comma-separated string
     new_asns = ' '.join(map(str, old_asns))
     logging.warning("New Rule: " + new_asns)
