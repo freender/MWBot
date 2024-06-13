@@ -174,7 +174,7 @@ def add_asn_to_firewall_rule(asn):
             "ruleset": "current"
         },
         "expression": "(ip.geoip.asnum in {" + new_asns + "} and http.host eq \"" + subdomain + "\")",
-        "description": "Allow MWBot Whitelist"
+        "description": "Whitelist MWBot"
     }
 
     # Cloudflare API endpoint for updating a WAF rule
