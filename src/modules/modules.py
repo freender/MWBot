@@ -150,11 +150,6 @@ def add_asn_to_firewall_rule(asn):
 
     # Save current firewall ASNs
     old_asns = get_asns_from_firewall_rule()
-    
-    if old_asns is None:
-        result = "Failed to retrieve existing ASNs from the firewall rule."
-        logging.error(result)
-        return result
 
     # Check if the ASN already exists in the list
     if asn not in old_asns:        
@@ -190,6 +185,43 @@ def add_asn_to_firewall_rule(asn):
         # Check the response status
         if response.status_code == 200:
             result = f"ASN {asn} has been sucessfully added to the firewall rule."
+            logging.warning(result)
+        else:
+            result = f"Failed to update rule. Status code: {response.status_code}"
+            logging.error(f"{result}: Response text: {response.text}")
+    except Exception as e:
+        result = f"Unexpected error occurred"
+        logging.error(result + ": " + str(e))
+    return result
+
+
+def disable_asn_to_firewall_rule():    
+    subdomain = cfg.CDN_URL
+
+    # Update the firewall rule data
+    rule_data = {
+    "action": "skip",
+        "action_parameters": {
+            "ruleset": "current"
+        },
+    "expression": "( http.host eq \"" + subdomain + "\")",
+    "description": "Whitelist MWBot",
+    "enabled": False
+    }
+
+    # Cloudflare API endpoint for updating a WAF rule
+    url = f"https://api.cloudflare.com/client/v4/zones/{cfg.WAF_ZONE}/rulesets/{cfg.WAF_RULESET}/rules/{cfg.WAF_RULEID}"
+
+    # Headers for authentication and content type
+    headers = {
+        'Authorization': "Bearer " + cfg.WAF_TOKEN
+    }
+    
+    try:
+        response = requests.patch(url, headers=headers, data=json.dumps(rule_data))
+        # Check the response status
+        if response.status_code == 200:
+            result = f"Firewall rule has been disabled."
             logging.warning(result)
         else:
             result = f"Failed to update rule. Status code: {response.status_code}"
