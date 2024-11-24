@@ -1,0 +1,1 @@
+* * * * * python /code/src/run_disable_asn.py >> /var/log/cron.log 2>&1
