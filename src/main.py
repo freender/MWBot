@@ -83,6 +83,13 @@ def command_allow_cdn(message):
 		sent = bot.send_message(message.chat.id, "Send IP address")
 		bot.register_next_step_handler(sent, ip)
 
+@bot.message_handler(commands=['reset_ip'])
+def command_reset_cdn(message):
+	if not modules.is_owner(message):
+		bot.reply_to(message, "Sorry you are not allowed to use this command!")
+	else:
+		result = modules.disable_asn_to_firewall_rule()
+		bot.send_message(message.chat.id, text=result)
 
 def ip(message):
 	ip=message.text
