@@ -197,6 +197,7 @@ def add_asn_to_firewall_rule(asn):
 
 def disable_asn_to_firewall_rule():    
     subdomain = cfg.CDN_URL
+    default_asn = cfg.MW_BOT_ASN_DEFAULT
 
     # Update the firewall rule data
     rule_data = {
@@ -204,7 +205,7 @@ def disable_asn_to_firewall_rule():
         "action_parameters": {
             "ruleset": "current"
         },
-    "expression": "( http.host eq \"" + subdomain + "\")",
+    "expression": "(ip.geoip.asnum in {" + default_asn + "} and http.host eq \"" + subdomain + "\")",
     "description": "Whitelist MWBot",
     "enabled": False
     }

@@ -16,3 +16,4 @@ WAF_RULESET  = os.environ['WAF_RULESET']
 WAF_RULEID  = os.environ['WAF_RULEID']
 CDN_URL  = os.environ['CDN_URL']
 TELEGRAM_AUTH_USERS = json.loads(os.environ['TELEGRAM_AUTH_USERS'])
+MW_BOT_ASN_DEFAULT = os.environ['MW_BOT_ASN_DEFAULT']
