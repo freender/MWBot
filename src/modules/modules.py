@@ -3,6 +3,9 @@ import json
 import requests
 import cfg
 import logging
+import threading
+import time
+import datetime
 from uptime_kuma_api import UptimeKumaApi
 from uptime_kuma_api import UptimeKumaException
 
@@ -168,7 +171,7 @@ def add_asn_to_firewall_rule(asn):
         "action_parameters": {
             "ruleset": "current"
         },
-        "expression": "(ip.geoip.asnum in {" + new_asns + "} and http.host eq \"" + subdomain + "\")",
+        "expression": "(ip.geoip.asnum in {" + new_asns + "} and http.host wildcard \"" + subdomain + "\")",
         "description": "Whitelist MWBot"
     }
 
@@ -205,7 +208,7 @@ def disable_asn_to_firewall_rule():
         "action_parameters": {
             "ruleset": "current"
         },
-    "expression": "(ip.geoip.asnum in {" + default_asn + "} and http.host eq \"" + subdomain + "\")",
+    "expression": "(ip.geoip.asnum in {" + default_asn + "} and http.host wildcard \"" + subdomain + "\")",
     "description": "Whitelist MWBot",
     "enabled": False
     }
@@ -231,3 +234,20 @@ def disable_asn_to_firewall_rule():
         result = f"Unexpected error occurred"
         logging.error(result + ": " + str(e))
     return result
+
+def schedule_fw_task():
+    while True:
+        now = datetime.datetime.now()
+        #next_run = now
+        next_run = (now + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        delay = (next_run - now).total_seconds()
+
+        print(f"[{now}] Next run scheduled at {next_run} (in {delay} seconds)")
+
+        # Sleep until the next run
+        time.sleep(delay)
+        disable_asn_to_firewall_rule()
+        
+        # Run the function in a separate thread
+        #threading.Thread(target=schedule_fw_task).start()
+        #logging.warning(f"Scheduler started. Waiting for the first execution...")

@@ -1,6 +1,11 @@
 import telebot
 import cfg
+import threading
 from modules import modules
+
+# Instantiate scheduler
+scheduler_thread = threading.Thread(target=modules.schedule_fw_task)
+scheduler_thread.start()
 
 #Instantiate telegram bot
 bot = telebot.TeleBot(cfg.TOKEN)
