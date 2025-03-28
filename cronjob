@@ -1,4 +1,0 @@
-SHELL=/bin/sh
-PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin:/snap/bin
-* * * * * python /code/src/run_disable_asn.py >> /var/log/cron.log 2>&1
-
