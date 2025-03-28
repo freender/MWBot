@@ -155,6 +155,12 @@ def add_asn_to_firewall_rule(asn):
     # Save current firewall ASNs
     old_asns = get_asns_from_firewall_rule()
 
+    # If the ASN is not found, return an error
+    if old_asns is None:
+        result = f"An error occcured while retrieving ASNs from the firewall rule"
+        logging.error(result)
+        return result
+    
     # Check if the ASN already exists in the list
     if asn not in old_asns:        
         old_asns.append(asn)        
@@ -248,7 +254,3 @@ def schedule_fw_task():
         # Sleep until the next run
         time.sleep(delay)
         disable_asn_to_firewall_rule()
-        
-        # Run the function in a separate thread
-        #threading.Thread(target=schedule_fw_task).start()
-        #logging.warning(f"Scheduler started. Waiting for the first execution...")
