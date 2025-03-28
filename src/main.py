@@ -101,9 +101,9 @@ def ip(message):
 	if not modules.is_valid_ip(ip):
 		bot.send_message(message.chat.id, "Invalid IP address format!\nDoublecheck and rerun /ip command")	
 	else:	
-		asn = modules.get_asn_from_ip(ip)
-		if asn == "None":
-			bot.send_message(message.chat.id, "ASN for this IP is not found!\nDoublecheck and rerun /ip command")		
+		asn, error = modules.get_asn_from_ip(ip)
+		if asn is None:
+			bot.send_message(message.chat.id, text=error)		
 		else:
 			result = modules.add_asn_to_firewall_rule(asn)
 			bot.send_message(message.chat.id, text=result)

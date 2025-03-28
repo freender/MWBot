@@ -49,20 +49,23 @@ def extract_as_number(json_string):
     pattern = r'"as":"AS(\d+)'
     match = re.search(pattern, json_string)
     if match:
-        return match.group(1)
+        return match.group(1), None
     else:
-        return "None"
+        return None, "ASN for this IP is not found!\nDoublecheck and rerun /ip command"
 
 def get_asn_from_ip(ip):
     try:
         url='http://ip-api.com/json/{}?fields=as'.format(ip)
         response=requests.get(url)
         response.raise_for_status()  # This will raise an HTTPError if the HTTP request returned an unsuccessful status code
-        asn = extract_as_number(response.text)
-        return asn
+        asn, error = extract_as_number(response.text)
+        if asn is None:
+            return None, error
+        return asn, None
     except requests.exceptions.RequestException as e:
-        logging.error(f"An error occurred: {e}")
-        return None    
+        result = f"ASN for this IP is not found!\nDoublecheck and rerun /ip command"
+        logging.error(result + ": " + str(e))
+        return None, result    
 
 def start_mw():    
     try:        
@@ -109,7 +112,6 @@ def stop_mw():
 
 
 def get_asns_from_firewall_rule():    
-
     # Cloudflare API endpoint for updating a WAF rule
     url = f"https://api.cloudflare.com/client/v4/zones/{cfg.WAF_ZONE}/rulesets/{cfg.WAF_RULESET}"
 
@@ -122,9 +124,9 @@ def get_asns_from_firewall_rule():
         response = requests.get(url, headers=headers)
         # Check the response status
         if response.status_code != 200:
-            result = f"Failed to retrieved the rule. Status code: {response.status_code}"
+            result = f"Failed to retrieve the rule. Status code: {response.status_code}"
             logging.error(f"{result}: Response text: {response.text}")
-            return None
+            return None, result
         
         response_dict = response.json()
         rules = response_dict['result']['rules']
@@ -137,15 +139,16 @@ def get_asns_from_firewall_rule():
                 asns = re.findall(r'\b\d+\b', expression)
                 logging.warning("Old Rule: " + ' '.join(map(str, asns)))        
 
-                return asns
+                return asns, None
     
         result = 'Rule retrieved successfully.'
         logging.warning(result)
+        return None, result
             
     except Exception as e:
-        result = f"Unexpected error occurred"
-        logging.error(result + ": " + str(e))
-    return None
+        result = f"Unexpected error occurred: {str(e)}"
+        logging.error(result)
+        return None, result
 
 
 
@@ -153,11 +156,11 @@ def add_asn_to_firewall_rule(asn):
     subdomain = cfg.CDN_URL
 
     # Save current firewall ASNs
-    old_asns = get_asns_from_firewall_rule()
+    old_asns, error = get_asns_from_firewall_rule()
 
     # If the ASN is not found, return an error
     if old_asns is None:
-        result = f"An error occcured while retrieving ASNs from the firewall rule"
+        result = f"An error occcured while retrieving ASNs from the firewall rule: {error}"
         logging.error(result)
         return result
     
@@ -167,6 +170,7 @@ def add_asn_to_firewall_rule(asn):
     else:
         result = f"ASN {asn} already exists in the firewall rule."
         logging.warning(result)
+        return result
 
     # Convert the list to a comma-separated string
     new_asns = ' '.join(map(str, old_asns))
