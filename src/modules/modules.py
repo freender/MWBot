@@ -208,7 +208,46 @@ def add_asn_to_firewall_rule(asn):
         logging.error(result + ": " + str(e))
     return result
 
-
+def get_rule_status():
+    subdomain = cfg.CDN_URL
+    # Cloudflare API endpoint for updating a WAF rule
+    url = f"https://api.cloudflare.com/client/v4/zones/{cfg.WAF_ZONE}/rulesets/{cfg.WAF_RULESET}"
+    
+    # Headers for authentication and content type
+    headers = {
+        'Authorization': "Bearer " + cfg.WAF_TOKEN
+    }    
+    
+    try:
+        response = requests.get(url, headers=headers)
+        # Check the response status
+        if response.status_code != 200:
+            result = f"Failed to retrieve the rule. Status code: {response.status_code}"
+            logging.error(f"{result}: Response text: {response.text}")
+            return None, result
+        
+        response_dict = response.json()
+        rules = response_dict['result']['rules']
+            
+        for rule in rules:
+            if rule.get('id') == cfg.WAF_RULEID:
+                expression = rule.get('enabled', '')                
+                match expression:
+                    case None:
+                        result = f"Failed to retrieve the rule. Status code: {response.status_code}"
+                        logging.error(f"{result}: Response text: {response.text}")
+                        return None, result
+                    case True:
+                        return True, None
+                    case False:
+                        return False, None     
+       
+    except Exception as e:
+        result = f"Unexpected error occurred: {str(e)}"
+        logging.error(result)
+        return None, result
+    
+    
 def disable_asn_to_firewall_rule():    
     subdomain = cfg.CDN_URL
     default_asn = cfg.MW_BOT_ASN_DEFAULT
@@ -250,11 +289,18 @@ def schedule_fw_task():
     while True:
         now = datetime.datetime.now()
         #next_run = now
-        next_run = (now + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        next_run = (now + datetime.timedelta(days=1)).replace(hour=3, minute=0, second=0, microsecond=0)
         delay = (next_run - now).total_seconds()
 
         print(f"[{now}] Next run scheduled at {next_run} (in {delay} seconds)")
 
         # Sleep until the next run
         time.sleep(delay)
-        disable_asn_to_firewall_rule()
+        
+        status, error= get_rule_status()
+        
+        if status is None:
+            result = f"An error occcured while retrieving the rule status: {error}"
+            logging.error(result)        
+        if status:
+            disable_asn_to_firewall_rule()
