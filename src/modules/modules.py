@@ -3,9 +3,9 @@ import json
 import requests
 import cfg
 import logging
-import threading
 import time
-import datetime
+from datetime import datetime
+from datetime import timedelta
 from uptime_kuma_api import UptimeKumaApi
 from uptime_kuma_api import UptimeKumaException
 
@@ -287,9 +287,9 @@ def disable_asn_to_firewall_rule():
 
 def schedule_fw_task():
     while True:
-        now = datetime.datetime.now()
+        now = datetime.now()
         #next_run = now
-        next_run = (now + datetime.timedelta(days=1)).replace(hour=3, minute=0, second=0, microsecond=0)
+        next_run = (now + timedelta(days=1)).replace(hour=3, minute=40, second=0, microsecond=0)
         delay = (next_run - now).total_seconds()
 
         print(f"[{now}] Next run scheduled at {next_run} (in {delay} seconds)")
@@ -302,5 +302,5 @@ def schedule_fw_task():
         if status is None:
             result = f"An error occcured while retrieving the rule status: {error}"
             logging.error(result)        
-        if status:
+        elif status:
             disable_asn_to_firewall_rule()
