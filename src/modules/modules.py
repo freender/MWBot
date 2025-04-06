@@ -4,6 +4,7 @@ import requests
 import cfg
 import logging
 import time
+import pytz
 from datetime import datetime
 from datetime import timedelta
 from uptime_kuma_api import UptimeKumaApi
@@ -246,6 +247,42 @@ def get_rule_status():
         result = f"Unexpected error occurred: {str(e)}"
         logging.error(result)
         return None, result
+
+def get_rule_modify_date():
+    subdomain = cfg.CDN_URL
+    # Cloudflare API endpoint for updating a WAF rule
+    url = f"https://api.cloudflare.com/client/v4/zones/{cfg.WAF_ZONE}/rulesets/{cfg.WAF_RULESET}"
+    
+    # Headers for authentication and content type
+    headers = {
+        'Authorization': "Bearer " + cfg.WAF_TOKEN
+    }    
+    
+    try:
+        response = requests.get(url, headers=headers)
+        # Check the response status
+        if response.status_code != 200:
+            result = f"Failed to retrieve the rule. Status code: {response.status_code}"
+            logging.error(f"{result}: Response text: {response.text}")
+            return None, result
+        
+        response_dict = response.json()
+        rules = response_dict['result']['rules']
+            
+        for rule in rules:
+            if rule.get('id') == cfg.WAF_RULEID:
+                expression = rule.get('last_updated', '')                
+                if expression is None:
+                        result = f"Failed to retrieve the rule modification date. Status code: {response.status_code}"
+                        logging.error(f"{result}: Response text: {response.text}")
+                        return None, result
+                else:
+                    return expression, None
+       
+    except Exception as e:
+        result = f"Unexpected error occurred: {str(e)}"
+        logging.error(result)
+        return None, result
     
     
 def disable_asn_to_firewall_rule():    
@@ -287,12 +324,18 @@ def disable_asn_to_firewall_rule():
 
 def schedule_fw_task():
     while True:
-        now = datetime.now()
-        #next_run = now
-        next_run = (now + timedelta(days=1)).replace(hour=3, minute=40, second=0, microsecond=0)
-        delay = (next_run - now).total_seconds()
+        modify_str, error = get_rule_modify_date()
+        modify_utc_time = datetime.fromisoformat(modify_str.replace("Z", "+00:00"))
+        server_timezone = pytz.timezone(cfg.TZ)
+        modify_local_time =  modify_utc_time.astimezone(server_timezone)
 
-        print(f"[{now}] Next run scheduled at {next_run} (in {delay} seconds)")
+          
+        #now = datetime.now()
+        #next_run = now
+        next_run = (modify_local_time + timedelta(days=7)).replace(hour=3, minute=40, second=0, microsecond=0)
+        delay = (next_run - modify_local_time).total_seconds()
+
+        print(f"[{modify_local_time}] Next run scheduled at {next_run} (in {delay} seconds)")
 
         # Sleep until the next run
         time.sleep(delay)
