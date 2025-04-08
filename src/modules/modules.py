@@ -68,6 +68,12 @@ def get_asn_from_ip(ip):
         logging.error(result + ": " + str(e))
         return None, result    
 
+def convert_to_local_time(time):
+    utc_time = datetime.fromisoformat(time.replace("Z", "+00:00"))
+    server_timezone = pytz.timezone(cfg.TZ)
+    local_time =  utc_time.astimezone(server_timezone)
+    return local_time
+
 def start_mw():    
     try:        
         api = UptimeKumaApi(cfg.KUMA_HOST)                
@@ -277,7 +283,8 @@ def get_rule_modify_date():
                         logging.error(f"{result}: Response text: {response.text}")
                         return None, result
                 else:
-                    return expression, None
+
+                    return modify_local_time, None
        
     except Exception as e:
         result = f"Unexpected error occurred: {str(e)}"
@@ -324,18 +331,13 @@ def disable_asn_to_firewall_rule():
 
 def schedule_fw_task():
     while True:
-        modify_str, error = get_rule_modify_date()
-        modify_utc_time = datetime.fromisoformat(modify_str.replace("Z", "+00:00"))
-        server_timezone = pytz.timezone(cfg.TZ)
-        modify_local_time =  modify_utc_time.astimezone(server_timezone)
-
-          
-        #now = datetime.now()
+        
+        now = datetime.now()        
+        next_run = (now + timedelta(days=1)).replace(hour=3, minute=40, second=0, microsecond=0)
         #next_run = now
-        next_run = (modify_local_time + timedelta(days=7)).replace(hour=3, minute=40, second=0, microsecond=0)
-        delay = (next_run - modify_local_time).total_seconds()
+        delay = (next_run - now).total_seconds()
 
-        print(f"[{modify_local_time}] Next run scheduled at {next_run} (in {delay} seconds)")
+        print(f"[{now}] Next run scheduled at {next_run} (in {delay} seconds)")
 
         # Sleep until the next run
         time.sleep(delay)
@@ -344,6 +346,13 @@ def schedule_fw_task():
         
         if status is None:
             result = f"An error occcured while retrieving the rule status: {error}"
-            logging.error(result)        
-        elif status:
-            disable_asn_to_firewall_rule()
+            logging.error(result)
+            continue        
+        if status:                   
+           modify_str, error = get_rule_modify_date()
+           if modify_str is None:
+               logging.error(f"An error occurred while retrieving the rule modification date: {error}")
+               continue
+           modify_local_time = convert_to_local_time(modify_str)
+           if modify_local_time + timedelta(days=7) < now:
+                disable_asn_to_firewall_rule()
