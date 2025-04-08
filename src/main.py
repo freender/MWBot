@@ -8,8 +8,8 @@ scheduler_thread = threading.Thread(target=modules.schedule_fw_task)
 scheduler_thread.start()
 
 #Instantiate telegram bot
-#bot = telebot.TeleBot(cfg.TOKEN)
-bot = telebot.TeleBot(cfg.TOKEN_STAGING)
+bot = telebot.TeleBot(cfg.TOKEN)
+#bot = telebot.TeleBot(cfg.TOKEN_STAGING)
 
 @bot.message_handler(commands=['start'])
 def command_start(message):
