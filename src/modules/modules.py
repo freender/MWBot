@@ -284,7 +284,7 @@ def get_rule_modify_date():
                         return None, result
                 else:
 
-                    return modify_local_time, None
+                    return expression, None
        
     except Exception as e:
         result = f"Unexpected error occurred: {str(e)}"
@@ -330,9 +330,8 @@ def disable_asn_to_firewall_rule():
     return result
 
 def schedule_fw_task():
-    while True:
-        
-        now = datetime.now()        
+    while True:        
+        now = datetime.now(pytz.timezone(cfg.TZ))        
         next_run = (now + timedelta(days=1)).replace(hour=3, minute=40, second=0, microsecond=0)
         #next_run = now
         delay = (next_run - now).total_seconds()
