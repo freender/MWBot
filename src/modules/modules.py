@@ -13,8 +13,8 @@ from uptime_kuma_api import UptimeKumaException
 
 COMMANDS = {
 'start': 'Start Screen',
-'ip': 'Allow Plex in unknown place',
-'reset_ip': 'Disable Plex in unknown place',
+'ip': 'Allow Plex in unkcurrent_timen place',
+'reset_ip': 'Disable Plex in unkcurrent_timen place',
 'start_silent': 'Start Silent MW',
 'stop_silent': 'Stop Silent MW',
 'firmware_mw': 'Start Firmware MW and notify Sev1 chat',
@@ -331,27 +331,34 @@ def disable_asn_to_firewall_rule():
 
 def schedule_fw_task():
     while True:        
-        now = datetime.now(pytz.timezone(cfg.TZ))        
-        next_run = (now + timedelta(days=1)).replace(hour=3, minute=40, second=0, microsecond=0)
-        #next_run = now
-        delay = (next_run - now).total_seconds()
+        current_time = datetime.now(pytz.timezone(cfg.TZ))        
+        next_run = (current_time + timedelta(days=1)).replace(hour=3, minute=40, second=0, microsecond=0)
+        #next_run = current_time
+        delay = (next_run - current_time).total_seconds()
 
-        print(f"[{now}] Next run scheduled at {next_run} (in {delay} seconds)")
+        print(f"[{current_time}] Next run scheduled at {next_run} (in {delay} seconds)")
 
         # Sleep until the next run
         time.sleep(delay)
         
+        # Check the rule status
         status, error= get_rule_status()
         
         if status is None:
             result = f"An error occcured while retrieving the rule status: {error}"
             logging.error(result)
             continue        
+        
         if status:                   
+           # Retrieve and convert the rule modification date
            modify_str, error = get_rule_modify_date()
            if modify_str is None:
                logging.error(f"An error occurred while retrieving the rule modification date: {error}")
                continue
+           
            modify_local_time = convert_to_local_time(modify_str)
-           if modify_local_time + timedelta(days=7) < now:
-                disable_asn_to_firewall_rule()
+           current_time = datetime.now(pytz.timezone(cfg.TZ))
+           
+           # Check if the rule needs to be disabled 
+           if modify_local_time + timedelta(days=7) < current_time:
+               disable_asn_to_firewall_rule()
