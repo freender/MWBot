@@ -13,8 +13,8 @@ from uptime_kuma_api import UptimeKumaException
 
 COMMANDS = {
 'start': 'Start Screen',
-'ip': 'Allow Plex in unkcurrent_timen place',
-'reset_ip': 'Disable Plex in unkcurrent_timen place',
+'ip': 'Allow Plex in unknown place',
+'reset_ip': 'Disable Plex in unknown place',
 'start_silent': 'Start Silent MW',
 'stop_silent': 'Stop Silent MW',
 'firmware_mw': 'Start Firmware MW and notify Sev1 chat',
