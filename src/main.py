@@ -85,7 +85,15 @@ def command_allow_cdn(message):
 		bot.reply_to(message, "Sorry you are not allowed to use this command!")
 	else:
 		bot.send_chat_action(message.chat.id, 'typing')
-		sent = bot.send_message(message.chat.id, "Send IP address")
+		sent = bot.send_message(
+			message.chat.id,
+			"Please send your IPv4 address.\n\n"
+			"🌐 To find your IP:\n"
+			"1. Visit https://ipinfo.io/ip\n"
+			"2. Copy the IP address shown\n"
+			"3. Paste it here",
+			disable_web_page_preview=True
+		)
 		bot.register_next_step_handler(sent, ip)
 
 @bot.message_handler(commands=['reset_ip'])
