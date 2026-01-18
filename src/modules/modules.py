@@ -5,6 +5,7 @@ import cfg
 import logging
 import time
 import pytz
+import socketio.exceptions
 from datetime import datetime
 from datetime import timedelta
 from uptime_kuma_api import UptimeKumaApi
@@ -81,16 +82,21 @@ def start_mw():
             api.login(cfg.KUMA_LOGIN, cfg.KUMA_PASSWORD)
             api.resume_maintenance(cfg.KUMA_MW_ID)
             result = "MW has been started"
+        except socketio.exceptions.TimeoutError:
+            result = "⏱️ Timeout connecting to Uptime Kuma. Service may be slow or unreachable."
+            logging.error(result)
         except UptimeKumaException as e:
-            result = "An error occurred while resuming"
+            result = "An error occurred while resuming MW"
             logging.error(result + ": " + str(e))
         finally:
             try:
                 api.disconnect()
-            except UptimeKumaException as e:
-                result = "An error occurred while disconnecting"
-                logging.error(result + ": " + str(e))
-    except UptimeKumaException as e:
+            except Exception as e:
+                logging.error("Error while disconnecting: " + str(e))
+    except socketio.exceptions.TimeoutError:
+        result = "⏱️ Timeout connecting to Uptime Kuma. Service may be unreachable."
+        logging.error(result)
+    except Exception as e:
         result = "Unable to establish connection to Uptime Kuma"
         logging.error(result + ": " + str(e))
     return result  
@@ -103,16 +109,21 @@ def stop_mw():
             api.login(cfg.KUMA_LOGIN, cfg.KUMA_PASSWORD)
             api.pause_maintenance(cfg.KUMA_MW_ID)
             result = "MW has been completed"            
+        except socketio.exceptions.TimeoutError:
+            result = "⏱️ Timeout connecting to Uptime Kuma. Service may be slow or unreachable."
+            logging.error(result)
         except UptimeKumaException as e:
             result = 'An error occurred while pausing MW'            
             logging.error(result + ": " + str(e))
         finally:
             try:
                 api.disconnect()
-            except UptimeKumaException as e:
-                result = 'An error occurred while disconnecting'
-                logging.error(result + ": " + str(e))
-    except UptimeKumaException as e:
+            except Exception as e:
+                logging.error("Error while disconnecting: " + str(e))
+    except socketio.exceptions.TimeoutError:
+        result = "⏱️ Timeout connecting to Uptime Kuma. Service may be unreachable."
+        logging.error(result)
+    except Exception as e:
         result = 'Unable to establish connection to Uptime Kuma'
         logging.error(result + ": " + str(e))
     return result
