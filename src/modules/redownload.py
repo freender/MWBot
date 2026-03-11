@@ -7,8 +7,8 @@ import cfg
 from modules.common import build_api_headers, extract_records, normalize_base_url, request_json
 
 
-SEERR_ISSUE_URL_PATTERN = re.compile(r'https?://[^\s]+/issues/(\d+)(?:[/?#].*)?$', re.IGNORECASE)
-SEERR_MEDIA_URL_PATTERN = re.compile(r'https?://[^\s]+/(?P<media_type>movie|tv|series)/(?:[^/?#]+/)?(?P<tmdb_id>\d+)(?:[/?#].*)?$', re.IGNORECASE)
+SEERR_ISSUE_URL_PATTERN = re.compile(r'(?:https?://)?[^\s]+/issues/(\d+)(?:[/?#].*)?$', re.IGNORECASE)
+SEERR_MEDIA_URL_PATTERN = re.compile(r'(?:https?://)?[^\s]+/(?P<media_type>movie|tv|series)/(?:[^/?#]+/)?(?P<tmdb_id>\d+)(?:[/?#].*)?$', re.IGNORECASE)
 
 
 def parse_seerr_issue_url(text):
