@@ -846,17 +846,16 @@ def handle_callback(call):
         key = _pending_key(chat_id, user_id)
         _pending_redownloads[key] = target
         confirm_label = 'Continue Anyway' if target.get('original_language_name') and target.get('original_language_name') != 'English' else 'Confirm'
-        bot.edit_message_text(
+        _show_menu(
+            chat_id,
             build_redownload_confirmation(target),
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-            parse_mode='HTML',
-            reply_markup=_confirm_cancel_markup(
+            _confirm_cancel_markup(
                 'redownload_confirm',
                 confirm_label=confirm_label,
                 cancel_callback='media_redownload',
                 cancel_label='⬅ Back',
             ),
+            message_id=call.message.message_id,
         )
         return
 
@@ -868,11 +867,11 @@ def handle_callback(call):
             bot.answer_callback_query(call.id, text='Session expired. Run /redownload again.')
             return
         bot.answer_callback_query(call.id, text='Processing...')
-        bot.edit_message_text(
+        _show_menu(
+            chat_id,
             build_redownload_confirmation(target) + '\n\n⏳ Processing...',
-            chat_id=chat_id,
+            None,
             message_id=call.message.message_id,
-            parse_mode='HTML',
         )
         bot.send_chat_action(chat_id, 'typing')
         result = execute_redownload(target)

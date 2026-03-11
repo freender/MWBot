@@ -333,9 +333,11 @@ class ModulesTest(unittest.TestCase):
         ]
 
         with mock.patch.object(self.redownload, 'request_json', side_effect=responses), \
+             mock.patch.object(self.redownload, 'post_seerr_issue_comment', return_value=(True, None)) as mock_comment, \
              mock.patch.object(self.redownload, 'resolve_seerr_issue', return_value=(True, None)) as mock_resolve:
             result = self.modules.execute_redownload(target)
 
+        mock_comment.assert_called_once_with(29, self.redownload.AUTO_RESOLVE_COMMENT)
         mock_resolve.assert_called_once_with(29)
         self.assertIn('Blacklisted', result)
         self.assertIn('issue #29 has been resolved', result)
@@ -348,11 +350,41 @@ class ModulesTest(unittest.TestCase):
         ]
 
         with mock.patch.object(self.redownload, 'request_json', side_effect=responses), \
+             mock.patch.object(self.redownload, 'post_seerr_issue_comment', return_value=(True, None)), \
              mock.patch.object(self.redownload, 'resolve_seerr_issue', return_value=(False, 'Failed to resolve Seerr issue (status 500).')):
             result = self.modules.execute_redownload(target)
 
         self.assertIn('Blacklisted', result)
         self.assertIn('Warning:', result)
+
+    def test_execute_redownload_reports_comment_failure(self):
+        target = {'media_type': 'movie', 'movie_id': 44, 'label': 'Movie title', 'file_id': 700, 'issue_id': 29}
+        responses = [
+            [{'id': 501, 'movieId': 44}],
+            None,
+        ]
+
+        with mock.patch.object(self.redownload, 'request_json', side_effect=responses), \
+             mock.patch.object(self.redownload, 'post_seerr_issue_comment', return_value=(False, 'Failed to comment on Seerr issue (status 500).')), \
+             mock.patch.object(self.redownload, 'resolve_seerr_issue', return_value=(True, None)):
+            result = self.modules.execute_redownload(target)
+
+        self.assertIn('Blacklisted', result)
+        self.assertIn('Failed to comment on Seerr issue', result)
+        self.assertIn('issue #29 has been resolved', result)
+
+    def test_post_seerr_issue_comment_posts_expected_message(self):
+        with mock.patch.object(self.redownload, 'request_json', return_value=None) as mock_request:
+            success, error = self.redownload.post_seerr_issue_comment(29, self.redownload.AUTO_RESOLVE_COMMENT)
+
+        self.assertTrue(success)
+        self.assertIsNone(error)
+        mock_request.assert_called_once_with(
+            'POST',
+            'https://seerr.example.com/api/v1/issue/29/comment',
+            headers={'X-Api-Key': 'seerr-key', 'Content-Type': 'application/json'},
+            payload={'message': self.redownload.AUTO_RESOLVE_COMMENT},
+        )
 
     def test_is_issue_open(self):
         self.assertTrue(self.modules.is_issue_open({'status': 1}))

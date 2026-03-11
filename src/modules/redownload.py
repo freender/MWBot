@@ -814,10 +814,33 @@ def build_redownload_confirmation(target):
 
 ISSUE_STATUS_OPEN = 1
 ISSUE_STATUS_RESOLVED = 2
+AUTO_RESOLVE_COMMENT = (
+    'Automatically resolved by MWBot after the requested action completed successfully. '
+    'If the issue still persists, please comment again or open a new request.'
+)
 
 
 def is_issue_open(issue):
     return issue.get('status') == ISSUE_STATUS_OPEN
+
+
+def post_seerr_issue_comment(issue_id, message):
+    url = f"{normalize_base_url(cfg.SEERR_BASE_URL)}/api/v1/issue/{issue_id}/comment"
+    try:
+        request_json(
+            'POST',
+            url,
+            headers=build_api_headers(cfg.SEERR_API_KEY),
+            payload={'message': message},
+        )
+        return True, None
+    except requests.exceptions.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else 'unknown'
+        logging.error('Unable to comment on Seerr issue %s: %s', issue_id, exc)
+        return False, f'Failed to comment on Seerr issue (status {status_code}).'
+    except requests.exceptions.RequestException as exc:
+        logging.error('Unable to comment on Seerr issue %s: %s', issue_id, exc)
+        return False, 'Unable to reach Seerr to comment on issue.'
 
 
 def resolve_seerr_issue(issue_id):
@@ -882,8 +905,11 @@ def execute_redownload(target):
 
     issue_id = target.get('issue_id')
     if issue_id and 'Blacklisted' in (result or ''):
+        comment_success, comment_error = post_seerr_issue_comment(issue_id, AUTO_RESOLVE_COMMENT)
         success, error = resolve_seerr_issue(issue_id)
         result_text = result or ''
+        if not comment_success:
+            result_text += f' Warning: {comment_error}'
         if success:
             result_text += f' Seerr issue #{issue_id} has been resolved.'
         else:
