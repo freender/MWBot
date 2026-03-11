@@ -65,6 +65,38 @@ COMMANDS = {
     'mw_status': 'Show active MW timer status',
 }
 
+HELP_SECTIONS = [
+    {
+        'title': 'Plex Access',
+        'icon': '📡',
+        'commands': {
+            'ip': 'Allow Plex from your current location',
+            'reset_ip': 'Remove temporary Plex access',
+        },
+    },
+    {
+        'title': 'Media',
+        'icon': '🎬',
+        'commands': {
+            'redownload': 'Replace a bad release via Seerr issue',
+        },
+    },
+    {
+        'title': 'Maintenance',
+        'icon': '🔧',
+        'commands': {
+            'start_silent': 'Start silent MW',
+            'stop_silent': 'Stop silent MW',
+            'firmware_mw': 'Firmware MW + notify Sev1',
+            'reboot_mw': 'Reboot MW + notify Sev1',
+            'generic_mw': 'Generic MW + notify Sev1',
+            'stop_mw': 'Stop MW + notify Sev1',
+            'mw_status': 'Show active MW timer',
+        },
+        'footer': 'Timed: /start_silent 30m, /firmware_mw 2h, etc.',
+    },
+]
+
 
 def is_command(string):
     if not string:

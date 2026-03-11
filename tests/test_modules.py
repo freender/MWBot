@@ -298,7 +298,6 @@ class ModulesTest(unittest.TestCase):
         self.assertIn('Issue: #29', text)
         self.assertIn('Current file: /movies/Movie title.mkv', text)
         self.assertIn('delete current file', text)
-        self.assertIn('Reply yes', text)
 
     def test_mw_status_text(self):
         state = self.modules.build_mw_state(timedelta(minutes=45), reason='Firmware maintenance')

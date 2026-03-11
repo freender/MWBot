@@ -597,8 +597,7 @@ def build_redownload_confirmation(target):
         f"{issue_line}"
         f"{file_line}"
         f'Service: {service}\n'
-        'Actions: blocklist release, delete current file, search fresh release.\n'
-        'Reply yes to continue or cancel to abort.'
+        'Actions: blocklist release, delete current file, search fresh release.'
     )
 
 
