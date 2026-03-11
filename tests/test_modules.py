@@ -1,0 +1,442 @@
+import importlib
+import os
+import sys
+import tempfile
+import unittest
+from datetime import datetime, timedelta
+from unittest import mock
+
+import pytz
+
+
+def load_modules_package(temp_dir):
+    env = {
+        'TOKEN': 'token',
+        'TOKEN_STAGING': 'token-staging',
+        'CHAT_ID': '100',
+        'NOTIFY_CHAT_ID': '200',
+        'OWNER': '1',
+        'KUMA_HOST': 'http://kuma.local',
+        'KUMA_LOGIN': 'user',
+        'KUMA_PASSWORD': 'pass',
+        'KUMA_MW_ID': '3',
+        'WAF_TOKEN': 'waf-token',
+        'WAF_ZONE': 'zone',
+        'WAF_RULESET': 'ruleset',
+        'WAF_RULEID': 'rule',
+        'CDN_URL': 'example.com',
+        'TELEGRAM_AUTH_USERS': '["1","2"]',
+        'MW_BOT_ASN_DEFAULT': '1234',
+        'TZ': 'UTC',
+        'SEERR_BASE_URL': 'https://seerr.example.com',
+        'SEERR_API_KEY': 'seerr-key',
+        'SONARR_BASE_URL': 'https://sonarr.example.com',
+        'SONARR_API_KEY': 'sonarr-key',
+        'RADARR_BASE_URL': 'https://radarr.example.com',
+        'RADARR_API_KEY': 'radarr-key',
+        'SONARR4K_BASE_URL': 'https://sonarr4k.example.com',
+        'SONARR4K_API_KEY': 'sonarr4k-key',
+        'RADARR4K_BASE_URL': 'https://radarr4k.example.com',
+        'RADARR4K_API_KEY': 'radarr4k-key',
+    }
+    os.environ.update(env)
+    sys.path.insert(0, '/home/freender/mwbot/src')
+    for name in [
+        'cfg',
+        'modules',
+        'modules.common',
+        'modules.firewall',
+        'modules.maintenance',
+        'modules.redownload',
+    ]:
+        sys.modules.pop(name, None)
+
+    cfg = importlib.import_module('cfg')
+    modules = importlib.import_module('modules')
+    maintenance = importlib.import_module('modules.maintenance')
+    redownload = importlib.import_module('modules.redownload')
+    firewall = importlib.import_module('modules.firewall')
+    maintenance.STATE_FILE = os.path.join(temp_dir, 'mw_state.json')
+    return cfg, modules, maintenance, redownload, firewall
+
+
+class DummyBot:
+    def __init__(self):
+        self.deleted = []
+        self.sent = []
+
+    def delete_message(self, chat_id, message_id):
+        self.deleted.append((chat_id, message_id))
+
+    def send_message(self, chat_id, text):
+        self.sent.append((chat_id, text))
+
+
+class ModulesTest(unittest.TestCase):
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.cfg, self.modules, self.maintenance, self.redownload, self.firewall = load_modules_package(self.temp_dir.name)
+
+    def tearDown(self):
+        self.temp_dir.cleanup()
+
+    def test_parse_duration(self):
+        duration, error = self.modules.parse_duration('30m')
+        self.assertEqual(duration, timedelta(minutes=30))
+        self.assertIsNone(error)
+
+        duration, error = self.modules.parse_duration('2h')
+        self.assertEqual(duration, timedelta(hours=2))
+        self.assertIsNone(error)
+
+        duration, error = self.modules.parse_duration('bad')
+        self.assertIsNone(duration)
+        self.assertIn('Invalid duration', error)
+
+    def test_parse_seerr_issue_url(self):
+        issue_id, error = self.modules.parse_seerr_issue_url('https://seerr.example.com/issues/29')
+        self.assertEqual(issue_id, 29)
+        self.assertIsNone(error)
+
+        issue_id, error = self.modules.parse_seerr_issue_url('not-a-url')
+        self.assertIsNone(issue_id)
+        self.assertIn('Invalid Seerr issue URL', error)
+
+    def test_parse_seerr_reference_supports_issue_and_media_urls(self):
+        reference, error = self.modules.parse_seerr_reference('https://seerr.example.com/issues/29')
+        self.assertIsNone(error)
+        self.assertEqual(reference, {'reference_type': 'issue', 'issue_id': 29})
+
+        reference, error = self.modules.parse_seerr_reference('https://seerr.example.com/movie/1220564')
+        self.assertIsNone(error)
+        self.assertEqual(reference, {'reference_type': 'media', 'media_type': 'movie', 'tmdb_id': 1220564})
+
+        reference, error = self.modules.parse_seerr_reference('https://seerr.example.com/tv/1408')
+        self.assertIsNone(error)
+        self.assertEqual(reference, {'reference_type': 'media', 'media_type': 'tv', 'tmdb_id': 1408})
+
+    def test_resolve_redownload_issue_rejects_tv_media_urls(self):
+        target, error = self.modules.resolve_redownload_issue('https://seerr.example.com/tv/1408')
+
+        self.assertIsNone(target)
+        self.assertEqual(error, 'TV replacements require an episode-linked Seerr issue URL.')
+
+    def test_get_issue_target_movie(self):
+        target, error = self.modules.get_issue_target({
+            'subject': 'Movie title',
+            'media': {'mediaType': 'movie', 'externalServiceId': 44},
+        })
+
+        self.assertIsNone(error)
+        self.assertEqual(target['media_type'], 'movie')
+        self.assertEqual(target['movie_id'], 44)
+
+    def test_get_issue_target_prefers_4k_mapping_when_issue_points_to_4k(self):
+        target, error = self.modules.get_issue_target({
+            'subject': 'Movie title',
+            'media': {
+                'mediaType': 'movie',
+                'externalServiceId': 44,
+                'externalServiceId4k': 88,
+                'serviceUrl': 'https://radarr4k.example.com/movie/123',
+            },
+        })
+
+        self.assertIsNone(error)
+        self.assertEqual(target['movie_id'], 88)
+        self.assertTrue(target['is_4k'])
+
+    def test_get_issue_target_episode_requires_specific_episode(self):
+        target, error = self.modules.get_issue_target({
+            'subject': 'Show',
+            'problemSeason': 0,
+            'problemEpisode': 0,
+            'media': {'mediaType': 'tv', 'externalServiceId': 77},
+        })
+
+        self.assertIsNone(target)
+        self.assertEqual(error, 'Seerr issue is not tied to a specific episode.')
+
+    def test_resolve_redownload_issue(self):
+        issue_payload = {
+            'subject': 'Movie title',
+            'media': {'mediaType': 'movie', 'externalServiceId': 44},
+        }
+
+        with mock.patch.object(self.redownload, 'get_seerr_issue', return_value=(issue_payload, None)), \
+             mock.patch.object(self.redownload, 'resolve_movie_replacement', return_value=({'issue_id': 29, 'movie_id': 44, 'label': 'Movie title'}, None)):
+            target, error = self.modules.resolve_redownload_issue('https://seerr.example.com/issues/29')
+
+        self.assertIsNone(error)
+        self.assertEqual(target['issue_id'], 29)
+        self.assertEqual(target['movie_id'], 44)
+
+    def test_resolve_redownload_issue_from_media_url(self):
+        issue_payload = {
+            'id': 29,
+            'subject': None,
+            'updatedAt': '2026-03-10T00:00:00.000Z',
+            'media': {'id': 4579, 'tmdbId': 1220564, 'mediaType': 'movie', 'externalServiceId': 44},
+        }
+        media_details = {
+            'title': 'The Secret Agent',
+            'mediaInfo': {'id': 4579, 'tmdbId': 1220564},
+        }
+
+        with mock.patch.object(self.redownload, 'find_seerr_issue_for_media', return_value=(issue_payload, media_details, None)), \
+             mock.patch.object(self.redownload, 'resolve_movie_replacement', return_value=({'issue_id': 29, 'movie_id': 44, 'label': 'The Secret Agent'}, None)):
+            target, error = self.modules.resolve_redownload_issue('https://seerr.example.com/movie/1220564')
+
+        self.assertIsNone(error)
+        self.assertEqual(target['issue_id'], 29)
+        self.assertEqual(target['label'], 'The Secret Agent')
+
+    def test_find_seerr_issue_for_media_returns_latest_matching_issue(self):
+        media_details = {'title': 'Example Movie', 'mediaInfo': {'id': 4579, 'tmdbId': 1220564}}
+        issue_older = {
+            'id': 21,
+            'updatedAt': '2026-03-01T00:00:00.000Z',
+            'createdAt': '2026-03-01T00:00:00.000Z',
+            'media': {'id': 4579, 'tmdbId': 1220564},
+        }
+        issue_newer = {
+            'id': 29,
+            'updatedAt': '2026-03-10T00:00:00.000Z',
+            'createdAt': '2026-03-10T00:00:00.000Z',
+            'media': {'id': 4579, 'tmdbId': 1220564},
+        }
+
+        with mock.patch.object(self.redownload, 'get_seerr_media_details', return_value=(media_details, None)), \
+             mock.patch.object(self.redownload, 'get_all_seerr_issue_ids', return_value=[21, 29]), \
+             mock.patch.object(self.redownload, 'get_seerr_issue', side_effect=[(issue_older, None), (issue_newer, None)]):
+            issue, found_media_details, error = self.modules.find_seerr_issue_for_media('movie', 1220564)
+
+        self.assertIsNone(error)
+        self.assertEqual(issue['id'], 29)
+        self.assertEqual(found_media_details['title'], 'Example Movie')
+
+    def test_execute_redownload_movie_uses_queue_first(self):
+        target = {'media_type': 'movie', 'movie_id': 44, 'label': 'Movie title', 'file_id': 700}
+        responses = [
+            [{'id': 501, 'movieId': 44}],
+            None,
+        ]
+
+        with mock.patch.object(self.redownload, 'request_json', side_effect=responses) as request_json:
+            result = self.modules.execute_redownload(target)
+
+        self.assertEqual(result, 'Blacklisted and removed queued movie release for Movie title.')
+        delete_call = request_json.call_args_list[1]
+        self.assertEqual(delete_call.args[0], 'DELETE')
+        self.assertIn('skipRedownload', delete_call.kwargs['params'])
+
+    def test_execute_redownload_movie_replaces_current_file(self):
+        target = {'media_type': 'movie', 'movie_id': 44, 'label': 'Movie title', 'file_id': 700}
+        responses = [
+            [],
+            {'records': [
+                {'id': 802, 'movieId': 44, 'eventType': 'downloadFolderImported', 'downloadId': 'abc', 'sourceTitle': 'Release'},
+                {'id': 801, 'movieId': 44, 'eventType': 'grabbed', 'downloadId': 'abc', 'sourceTitle': 'Release'},
+            ]},
+            None,
+            None,
+            None,
+        ]
+
+        with mock.patch.object(self.redownload, 'request_json', side_effect=responses) as request_json:
+            result = self.modules.execute_redownload(target)
+
+        self.assertEqual(result, 'Blacklisted release, deleted the current file, and triggered a fresh search for Movie title.')
+        post_call = request_json.call_args_list[2]
+        self.assertEqual(post_call.args[0], 'POST')
+        self.assertIn('/api/v3/history/failed/801', post_call.args[1])
+        delete_file_call = request_json.call_args_list[3]
+        self.assertEqual(delete_file_call.args[0], 'DELETE')
+        self.assertIn('/api/v3/moviefile/700', delete_file_call.args[1])
+        search_call = request_json.call_args_list[4]
+        self.assertEqual(search_call.args[0], 'POST')
+        self.assertEqual(search_call.kwargs['payload']['name'], 'MoviesSearch')
+
+    def test_execute_redownload_episode_replaces_current_file(self):
+        target = {
+            'media_type': 'episode',
+            'series_id': 77,
+            'season_number': 1,
+            'episode_number': 2,
+            'episode_id': 9001,
+            'file_id': 444,
+            'label': 'Show S01E02',
+        }
+        responses = [
+            [],
+            {'records': [
+                {'id': 9011, 'episodeId': 9001, 'eventType': 'downloadFolderImported', 'downloadId': 'xyz', 'sourceTitle': 'Episode Release'},
+                {'id': 9010, 'episodeId': 9001, 'eventType': 'grabbed', 'downloadId': 'xyz', 'sourceTitle': 'Episode Release'},
+            ]},
+            None,
+            None,
+            None,
+        ]
+
+        with mock.patch.object(self.redownload, 'request_json', side_effect=responses):
+            result = self.modules.execute_redownload(target)
+
+        self.assertEqual(result, 'Blacklisted release, deleted the current file, and triggered a fresh search for Show S01E02.')
+
+    def test_select_failed_history_record_prefers_grabbed_events(self):
+        record = self.modules.select_failed_history_record([
+            {'id': 1, 'movieId': 44, 'eventType': 'downloadFolderImported'},
+            {'id': 2, 'movieId': 44, 'eventType': 'grabbed'},
+            {'id': 3, 'movieId': 44, 'eventType': 'downloadFailed'},
+        ], 'movieId', 44)
+
+        self.assertEqual(record['id'], 2)
+
+    def test_build_redownload_confirmation(self):
+        text = self.modules.build_redownload_confirmation({'media_type': 'movie', 'label': 'Movie title', 'issue_id': 29, 'file_path': '/movies/Movie title.mkv', 'service': 'Radarr'})
+        self.assertIn('Movie title', text)
+        self.assertIn('Issue: #29', text)
+        self.assertIn('Current file: /movies/Movie title.mkv', text)
+        self.assertIn('delete current file', text)
+        self.assertIn('Reply yes', text)
+
+    def test_mw_status_text(self):
+        state = self.modules.build_mw_state(timedelta(minutes=45), reason='Firmware maintenance')
+        text = self.modules.get_mw_status_text(state)
+        self.assertIn('Firmware maintenance is active.', text)
+        self.assertIn('Remaining:', text)
+
+    def test_stop_timed_mw_clears_state_and_deletes_message(self):
+        state = self.modules.build_mw_state(
+            timedelta(minutes=30),
+            notify_chat_id='200',
+            notify_message_id=55,
+            reason='Maintenance window',
+        )
+        self.modules.save_mw_state(state)
+        bot = DummyBot()
+
+        with mock.patch.object(self.maintenance, 'stop_mw', return_value='MW has been completed'):
+            result, success = self.modules.stop_timed_mw(bot)
+
+        self.assertTrue(success)
+        self.assertEqual(result, 'MW has been completed')
+        self.assertEqual(bot.deleted, [('200', 55)])
+        self.assertIsNone(self.modules.load_mw_state())
+
+    def test_stop_timed_mw_keeps_state_on_failure(self):
+        state = self.modules.build_mw_state(timedelta(minutes=30), notify_chat_id='200', notify_message_id=55)
+        self.modules.save_mw_state(state)
+        bot = DummyBot()
+
+        with mock.patch.object(self.maintenance, 'stop_mw', return_value='Unable to establish connection to Uptime Kuma'):
+            result, success = self.modules.stop_timed_mw(bot)
+
+        self.assertFalse(success)
+        self.assertEqual(result, 'Unable to establish connection to Uptime Kuma')
+        self.assertEqual(bot.deleted, [])
+        self.assertIsNotNone(self.modules.load_mw_state())
+
+    def test_replace_mw_state_deletes_previous_message(self):
+        self.modules.save_mw_state(self.modules.build_mw_state(
+            timedelta(minutes=30),
+            notify_chat_id='200',
+            notify_message_id=55,
+        ))
+        bot = DummyBot()
+
+        new_state = self.modules.build_mw_state(
+            timedelta(minutes=45),
+            notify_chat_id='200',
+            notify_message_id=77,
+        )
+        self.modules.replace_mw_state(bot, new_state)
+
+        self.assertEqual(bot.deleted, [('200', 55)])
+        self.assertEqual(self.modules.load_mw_state()['notify_message_id'], 77)
+
+    def test_maintain_timed_mw_sends_failure_message(self):
+        expired_at = datetime.now(pytz.timezone(self.cfg.TZ)) - timedelta(minutes=1)
+        self.modules.save_mw_state({
+            'expires_at': expired_at.isoformat(),
+            'duration': '30m',
+            'notify_chat_id': '200',
+            'notify_message_id': 55,
+            'reason': 'Maintenance window',
+        })
+        bot = DummyBot()
+
+        with mock.patch.object(self.maintenance, 'stop_timed_mw', return_value=('boom', False)):
+            with mock.patch.object(self.maintenance.time, 'sleep', side_effect=RuntimeError('stop loop')):
+                with self.assertRaises(RuntimeError):
+                    self.modules.maintain_timed_mw(bot, poll_interval=0)
+
+        self.assertEqual(bot.sent, [('200', 'Timed maintenance cleanup failed: boom')])
+
+    def test_is_valid_ip_uses_stdlib_parser(self):
+        self.assertTrue(self.modules.is_valid_ip('127.0.0.1'))
+        self.assertTrue(self.modules.is_valid_ip('::1'))
+        self.assertFalse(self.modules.is_valid_ip('999.999.999.999'))
+        self.assertFalse(self.modules.is_valid_ip(None))
+        self.assertFalse(self.modules.is_valid_ip(''))
+
+    def test_get_rule_status_uses_shared_rule_fetch(self):
+        response = mock.Mock()
+        response.status_code = 200
+        response.json.return_value = {
+            'result': {
+                'rules': [
+                    {'id': 'rule', 'enabled': True, 'last_updated': '2026-03-10T00:00:00.000Z'},
+                ]
+            }
+        }
+
+        with mock.patch.object(self.firewall.requests, 'get', return_value=response):
+            enabled, error = self.modules.get_rule_status()
+
+        self.assertTrue(enabled)
+        self.assertIsNone(error)
+
+    def test_get_asn_from_ip_parses_json_response(self):
+        response = mock.Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {'as': 'AS7922 Comcast Cable'}
+
+        with mock.patch.object(self.firewall.requests, 'get', return_value=response):
+            asn, error = self.modules.get_asn_from_ip('127.0.0.1')
+
+        self.assertEqual(asn, '7922')
+        self.assertIsNone(error)
+
+    def test_get_asn_from_ip_rejects_missing_asn(self):
+        response = mock.Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = {'as': ''}
+
+        with mock.patch.object(self.firewall.requests, 'get', return_value=response):
+            asn, error = self.modules.get_asn_from_ip('127.0.0.1')
+
+        self.assertIsNone(asn)
+        self.assertIn('ASN for this IP is not found', error)
+
+    def test_get_next_firewall_run_uses_same_day_when_before_window(self):
+        current_time = datetime(2026, 3, 10, 1, 15, tzinfo=pytz.UTC)
+        next_run = self.modules.get_next_firewall_run(current_time)
+
+        self.assertEqual(next_run, datetime(2026, 3, 10, 3, 40, tzinfo=pytz.UTC))
+
+    def test_get_next_firewall_run_rolls_to_next_day_after_window(self):
+        current_time = datetime(2026, 3, 10, 4, 0, tzinfo=pytz.UTC)
+        next_run = self.modules.get_next_firewall_run(current_time)
+
+        self.assertEqual(next_run, datetime(2026, 3, 11, 3, 40, tzinfo=pytz.UTC))
+
+    def test_cfg_missing_required_variable_raises_helpful_error(self):
+        os.environ.pop('TOKEN', None)
+        sys.modules.pop('cfg', None)
+        with self.assertRaisesRegex(RuntimeError, 'Missing required environment variable: TOKEN'):
+            importlib.import_module('cfg')
+
+
+if __name__ == '__main__':
+    unittest.main()
