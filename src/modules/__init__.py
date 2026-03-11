@@ -58,7 +58,7 @@ from modules.redownload import (
 
 
 COMMANDS = {
-    'start': 'Start Screen',
+    'start': 'Open main menu',
     'ip': 'Allow Plex in unknown place',
     'reset_ip': 'Disable Plex in unknown place',
     'redownload': 'Blacklist issue release and prevent re-download',
@@ -80,6 +80,7 @@ HELP_SECTIONS = [
             'ip': 'Allow Plex from your current location',
             'reset_ip': 'Remove temporary Plex access',
         },
+        'footer': 'Menu-first: /start -> Plex Access',
     },
     {
         'title': 'Media',
@@ -87,6 +88,7 @@ HELP_SECTIONS = [
         'commands': {
             'redownload': 'Replace a bad release via Seerr issue',
         },
+        'footer': 'Menu-first: /start -> Media',
     },
     {
         'title': 'Maintenance',
@@ -101,7 +103,7 @@ HELP_SECTIONS = [
             'reboot_mw': 'Reboot MW + notify Sev1 (auto 5m)',
             'mw_status': 'Show active MW timer',
         },
-        'footer': 'Quick actions: /mw | Custom timers: /start_silent 30m, /generic_mw 2h',
+        'footer': 'Menu-first: /start -> Maintenance | Custom timers: /start_silent 30m, /generic_mw 2h',
     },
 ]
 

@@ -8,8 +8,6 @@ from urllib.parse import urlparse
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from modules import (
-    COMMANDS,
-    HELP_SECTIONS,
     add_asn_to_firewall_rule,
     build_issue_label,
     build_mw_state,
@@ -158,6 +156,56 @@ def _confirm_cancel_markup(confirm_data):
     return markup
 
 
+def _show_menu(chat_id, text, reply_markup, message_id=None):
+    if message_id is not None:
+        bot.edit_message_text(
+            text,
+            chat_id=chat_id,
+            message_id=message_id,
+            parse_mode='HTML',
+            disable_web_page_preview=True,
+            reply_markup=reply_markup,
+        )
+        return
+
+    bot.send_message(
+        chat_id,
+        text,
+        parse_mode='HTML',
+        disable_web_page_preview=True,
+        reply_markup=reply_markup,
+    )
+
+
+def _home_markup():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton('📡 Plex Access', callback_data='nav_plex'),
+        InlineKeyboardButton('🎬 Media', callback_data='nav_media'),
+    )
+    markup.add(InlineKeyboardButton('🔧 Maintenance', callback_data='nav_mw'))
+    markup.add(InlineKeyboardButton('✖ Close', callback_data='menu_close'))
+    return markup
+
+
+def _plex_markup():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton('✅ Allow Plex', callback_data='plex_allow'),
+        InlineKeyboardButton('🧹 Remove Access', callback_data='plex_reset'),
+    )
+    markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_home'))
+    return markup
+
+
+def _media_markup():
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton('📋 Pick Open Issue', callback_data='media_redownload'))
+    markup.add(InlineKeyboardButton('🌐 Open Overseerr', url=_get_seerr_browser_url()))
+    markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_home'))
+    return markup
+
+
 def _maintenance_markup():
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
@@ -174,21 +222,51 @@ def _maintenance_markup():
     )
     markup.add(
         InlineKeyboardButton('📋 Status', callback_data='mw_status'),
-        InlineKeyboardButton('✖ Close', callback_data='mw_close'),
+        InlineKeyboardButton('⬅ Back', callback_data='nav_home'),
     )
     return markup
 
 
-def _send_maintenance_menu(chat_id):
-    bot.send_message(
+def _show_home_menu(chat_id, message_id=None):
+    _show_menu(
+        chat_id,
+        '🤖 <b>MWBot</b>\n'
+        'Choose a section to manage Plex, redownloads, or maintenance windows.',
+        _home_markup(),
+        message_id=message_id,
+    )
+
+
+def _show_plex_menu(chat_id, message_id=None):
+    _show_menu(
+        chat_id,
+        '📡 <b>Plex Access</b>\n'
+        'Allow Plex from your current location or remove the temporary rule when you are done.',
+        _plex_markup(),
+        message_id=message_id,
+    )
+
+
+def _show_media_menu(chat_id, message_id=None):
+    _show_menu(
+        chat_id,
+        '🎬 <b>Media</b>\n'
+        'Pick an open Seerr issue to replace a bad release, or jump into Overseerr first.',
+        _media_markup(),
+        message_id=message_id,
+    )
+
+
+def _show_maintenance_menu(chat_id, message_id=None):
+    _show_menu(
         chat_id,
         '🔧 <b>Maintenance</b>\n'
         'Quick actions for the common MW flows.\n\n'
         '- Silent and regular starts stay open until you stop them\n'
         '- Reboot and firmware auto-stop after 5m\n'
         '- Custom timers still work: /start_silent 30m or /generic_mw 2h',
-        parse_mode='HTML',
-        reply_markup=_maintenance_markup(),
+        _maintenance_markup(),
+        message_id=message_id,
     )
 
 
@@ -245,35 +323,32 @@ def _stop_notified_mw():
 
 @bot.message_handler(commands=['start'])
 def command_start(message):
-    cid = message.chat.id
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton('📡 Allow Plex', callback_data='cmd_ip'),
-        InlineKeyboardButton('🎬 Redownload', callback_data='cmd_redownload'),
-    )
-    markup.add(
-        InlineKeyboardButton('🔧 Maintenance', callback_data='cmd_mw'),
-        InlineKeyboardButton('📋 Commands', callback_data='cmd_help'),
-    )
-    bot.send_message(
-        cid,
-        'Welcome to MWBot! Pick an action.',
-        reply_markup=markup,
-    )
+    _show_home_menu(message.chat.id)
 
 
 # ── /help ────────────────────────────────────────────────────────────
 
 def _build_help_text():
-    lines = ['<b>MWBot</b>']
-    for section in HELP_SECTIONS:
-        lines.append('')
-        lines.append(f"{section['icon']}  <b>{section['title']}</b>")
-        for cmd, desc in section['commands'].items():
-            lines.append(f'  /{cmd} — {desc}')
-        if section.get('footer'):
-            lines.append(f"  <i>{section['footer']}</i>")
-    return '\n'.join(lines)
+    return '\n'.join([
+        '<b>MWBot</b>',
+        '',
+        'Use /start for the main menu.',
+        '',
+        '<b>Quick Paths</b>',
+        '/start — Open the main menu',
+        '/help — Show this help',
+        '',
+        '<b>Shortcuts</b>',
+        '/ip — Allow Plex from your current location',
+        '/redownload — Replace a bad release from Seerr',
+        '/mw — Open maintenance quick actions',
+        '',
+        '<b>Timed MW Examples</b>',
+        '/start_silent 30m',
+        '/generic_mw 2h',
+        '/reboot_mw 15m',
+        '/firmware_mw 30m',
+    ])
 
 
 @bot.message_handler(commands=['help'])
@@ -289,7 +364,7 @@ def command_help(message):
 @safe_command
 @owner_only
 def command_mw_menu(message):
-    _send_maintenance_menu(message.chat.id)
+    _show_maintenance_menu(message.chat.id)
 
 
 # ── /redownload ──────────────────────────────────────────────────────
@@ -492,8 +567,41 @@ def handle_callback(call):
         bot.answer_callback_query(call.id, text='Cancelled')
         return
 
-    # Quick-action buttons from /start
-    if data == 'cmd_ip':
+    if data == 'menu_close':
+        bot.answer_callback_query(call.id, text='Closed')
+        bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
+        return
+
+    if data == 'nav_home':
+        bot.answer_callback_query(call.id)
+        _show_home_menu(chat_id, message_id=call.message.message_id)
+        return
+
+    if data == 'nav_plex':
+        bot.answer_callback_query(call.id)
+        if str(user_id) not in cfg.TELEGRAM_AUTH_USERS:
+            bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
+            return
+        _show_plex_menu(chat_id, message_id=call.message.message_id)
+        return
+
+    if data == 'nav_media':
+        bot.answer_callback_query(call.id)
+        if str(user_id) not in cfg.TELEGRAM_AUTH_USERS:
+            bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
+            return
+        _show_media_menu(chat_id, message_id=call.message.message_id)
+        return
+
+    if data in ('nav_mw', 'cmd_mw'):
+        bot.answer_callback_query(call.id)
+        if user_id != cfg.OWNER:
+            bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
+            return
+        _show_maintenance_menu(chat_id, message_id=call.message.message_id)
+        return
+
+    if data in ('plex_allow', 'cmd_ip'):
         bot.answer_callback_query(call.id)
         if str(user_id) not in cfg.TELEGRAM_AUTH_USERS:
             bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
@@ -501,7 +609,17 @@ def handle_callback(call):
         _start_ip_flow(chat_id, user_id)
         return
 
-    if data == 'cmd_redownload':
+    if data == 'plex_reset':
+        bot.answer_callback_query(call.id)
+        if user_id != cfg.OWNER:
+            bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
+            return
+        bot.send_chat_action(chat_id, 'typing')
+        result = disable_asn_to_firewall_rule()
+        bot.send_message(chat_id, text=result or 'Unable to update firewall rule.')
+        return
+
+    if data in ('media_redownload', 'cmd_redownload'):
         bot.answer_callback_query(call.id)
         if str(user_id) not in cfg.TELEGRAM_AUTH_USERS:
             bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
@@ -512,19 +630,6 @@ def handle_callback(call):
     if data == 'cmd_help':
         bot.answer_callback_query(call.id)
         bot.send_message(chat_id, _build_help_text(), parse_mode='HTML')
-        return
-
-    if data == 'cmd_mw':
-        bot.answer_callback_query(call.id)
-        if user_id != cfg.OWNER:
-            bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
-            return
-        _send_maintenance_menu(chat_id)
-        return
-
-    if data == 'mw_close':
-        bot.answer_callback_query(call.id, text='Closed')
-        bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
         return
 
     if data.startswith('mw_'):
