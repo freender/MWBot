@@ -416,7 +416,7 @@ def handle_callback(call):
     # Quick-action buttons from /start
     if data == 'cmd_ip':
         bot.answer_callback_query(call.id)
-        if str(chat_id) not in cfg.TELEGRAM_AUTH_USERS:
+        if str(user_id) not in cfg.TELEGRAM_AUTH_USERS:
             bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
             return
         _start_ip_flow(chat_id, user_id)
@@ -437,6 +437,9 @@ def handle_callback(call):
 
     if data == 'cmd_mw_status':
         bot.answer_callback_query(call.id)
+        if user_id != cfg.OWNER:
+            bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
+            return
         bot.send_message(chat_id, get_mw_status_text())
         return
 
