@@ -331,7 +331,7 @@ def _show_maintenance_menu(chat_id, message_id=None):
         'Quick actions for the common MW flows.\n\n'
         '- Silent and regular starts stay open until you stop them\n'
         '- Reboot and firmware auto-stop after 5m\n'
-        '- Custom timers still work: /start_silent 30m or /generic_mw 2h',
+        '- Use the buttons below for the common maintenance actions',
         _maintenance_markup(),
         message_id=message_id,
     )

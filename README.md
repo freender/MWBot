@@ -5,7 +5,7 @@ MWBot is a Telegram bot designed to manage maintenance windows (MW) in Uptime Ku
 ## Features
 
 - Start and stop maintenance windows in Uptime Kuma.
-- Optionally start timed maintenance windows with commands like `/generic_mw 30m` or `/start_silent 2h`.
+- Manage maintenance windows from the `/mw` menu with quick actions for silent, regular, reboot, and firmware flows.
 - Auto-stop timed maintenance windows and clean up the notification message when the window completes successfully.
 - Notify a dedicated Telegram channel about maintenance activities.
 - Support a separate notification chat for testing via environment variable override.
@@ -26,7 +26,6 @@ services:
     container_name: mwbot
     environment:
       - TOKEN=${TELEGRAM_TOKEN} # Set your Telegram bot token
-      - TOKEN_STAGING=${TELEGRAM_TOKEN_STAGING} # Set your Telegram bot token for staging
       - CHAT_ID=${TELEGRAM_CHATID} # Default Telegram chat ID for notifications
       - NOTIFY_CHAT_ID=${TELEGRAM_NOTIFY_CHATID} # Optional override for maintenance notifications
       - OWNER=${OWNER} # Telegram user ID of the bot owner
@@ -57,7 +56,6 @@ services:
 ## Environment Variables
 
 - `TOKEN`: Your Telegram bot token.
-- `TOKEN_STAGING`: Your Telegram bot token for the staging environment.
 - `CHAT_ID`: The default Telegram chat ID to receive notifications.
 - `NOTIFY_CHAT_ID`: Optional notification chat override. If unset, `CHAT_ID` is used.
 - `OWNER`: The Telegram user ID of the bot owner, who has full command access.
@@ -89,9 +87,8 @@ services:
 1. **Start the Bot**: Use the `/start` command to initialize the bot.
 2. **Help**: Use the `/help` command to list all available commands.
 3. **Manage Maintenance Windows**:
-   - Use `/start_silent`, `/stop_silent`, `/firmware_mw`, `/reboot_mw`, `/generic_mw`, and `/stop_mw` to manage maintenance windows.
-   - Add a duration such as `30m` or `2h` to `/start_silent`, `/firmware_mw`, `/reboot_mw`, or `/generic_mw` for timed cleanup.
-   - Use `/mw_status` to inspect the active timed maintenance window.
+   - Use `/mw` to open the maintenance menu.
+   - Use the inline buttons for silent start, regular start, reboot 5m, firmware 5m, silent stop, stop + notify, and status.
 4. **IP Management**: Use `/ip` to allow a new IP address and `/reset_ip` to reset IP access.
 5. **Redownload Control**: Use `/redownload` and follow the prompts with a Seerr issue, movie, or series URL. The bot confirms the target, then blocklists the matching release in Sonarr or Radarr so it is not downloaded again.
 
@@ -101,7 +98,7 @@ services:
 2. The bot asks for a Seerr URL such as `https://seerr.example.com/issues/29`, `https://seerr.example.com/movie/1220564`, or `https://seerr.example.com/tv/1408`.
 3. If you send a movie or series URL, the bot looks up the most recent matching Seerr issue automatically, then resolves the target media plus whether it belongs to the standard or 4K arr instance.
 4. The bot shows a confirmation message with the selected backend: `Radarr`, `Radarr4k`, `Sonarr`, or `Sonarr4k`.
-5. After you reply `yes`, the bot tries to stop future grabs in this order:
+5. After you confirm in Telegram, the bot tries to stop future grabs in this order:
    - remove a matching queued release with `blocklist=true` and `skipRedownload=true`
    - if nothing is queued, mark the best matching history item as failed
 6. For history fallback, the bot prefers `grabbed` records before `downloadFolderImported` records so the blocklist entry is created against the actual grabbed release.
