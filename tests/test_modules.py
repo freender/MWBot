@@ -366,12 +366,28 @@ class ModulesTest(unittest.TestCase):
 
     def test_build_issue_label(self):
         self.assertEqual(
-            self.modules.build_issue_label({'id': 5, 'issueType': 1, 'display_title': 'Bad Movie', 'media': {'mediaType': 'movie'}}),
-            'Bad Movie - Video',
+            self.modules.build_issue_label({
+                'id': 5,
+                'issueType': 1,
+                'display_title': 'Bad Movie',
+                'display_year': '2016',
+                'media': {'mediaType': 'movie'},
+            }),
+            'Bad Movie (2016) - Video',
         )
         self.assertEqual(
             self.modules.build_issue_label({'id': 5, 'issueType': 2, 'display_title': 'Show Name', 'media': {'mediaType': 'tv'}, 'problemSeason': 2, 'problemEpisode': 3}),
             'Show Name S02E03 - Audio',
+        )
+        self.assertEqual(
+            self.modules.build_issue_label({
+                'id': 5,
+                'issueType': 4,
+                'display_title': 'La La Land',
+                'display_year': '2016',
+                'media': {'mediaType': 'movie'},
+            }),
+            'La La Land (2016)',
         )
         self.assertEqual(
             self.modules.build_issue_label({'id': 5, 'media': {'mediaType': 'movie', 'tmdbId': 550}}),
@@ -406,6 +422,19 @@ class ModulesTest(unittest.TestCase):
         self.assertIn('Issue: #29', text)
         self.assertIn('Current file: /movies/Movie title.mkv', text)
         self.assertIn('delete current file', text)
+
+    def test_build_redownload_confirmation_warns_for_non_english_original_language(self):
+        text = self.modules.build_redownload_confirmation({
+            'media_type': 'movie',
+            'label': 'Movie title',
+            'issue_id': 29,
+            'file_path': '/movies/Movie title.mkv',
+            'service': 'Radarr',
+            'original_language_name': 'French',
+        })
+
+        self.assertIn('Warning: original language is French.', text)
+        self.assertIn('may not be available in English at all', text)
 
     def test_mw_status_text(self):
         state = self.modules.build_mw_state(timedelta(minutes=45), reason='Firmware maintenance')

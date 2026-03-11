@@ -17,6 +17,100 @@ ISSUE_TYPE_LABELS = {
     4: 'Other',
 }
 
+LANGUAGE_LABELS = {
+    'ar': 'Arabic',
+    'cs': 'Czech',
+    'da': 'Danish',
+    'de': 'German',
+    'el': 'Greek',
+    'en': 'English',
+    'es': 'Spanish',
+    'fa': 'Persian',
+    'fi': 'Finnish',
+    'fr': 'French',
+    'he': 'Hebrew',
+    'hi': 'Hindi',
+    'hu': 'Hungarian',
+    'id': 'Indonesian',
+    'it': 'Italian',
+    'ja': 'Japanese',
+    'ko': 'Korean',
+    'nl': 'Dutch',
+    'no': 'Norwegian',
+    'pl': 'Polish',
+    'pt': 'Portuguese',
+    'ro': 'Romanian',
+    'ru': 'Russian',
+    'sv': 'Swedish',
+    'th': 'Thai',
+    'tr': 'Turkish',
+    'uk': 'Ukrainian',
+    'vi': 'Vietnamese',
+    'zh': 'Chinese',
+}
+
+
+def _extract_year(value):
+    if not value:
+        return None
+
+    match = re.match(r'(?P<year>\d{4})', str(value))
+    if match:
+        return match.group('year')
+    return None
+
+
+def _format_language_name(value):
+    if not value:
+        return None
+
+    normalized = str(value).strip().lower().replace('_', '-')
+    base_code = normalized.split('-', 1)[0]
+    if base_code in LANGUAGE_LABELS:
+        return LANGUAGE_LABELS[base_code]
+
+    if len(normalized) <= 3:
+        return normalized.upper()
+    return normalized.replace('-', ' ').title()
+
+
+def get_issue_media_details(issue):
+    media = issue.get('media') or {}
+    media_type = media.get('mediaType')
+    tmdb_id = media.get('tmdbId')
+    if media_type not in ('movie', 'tv') or not tmdb_id:
+        return {}
+
+    media_details, error = get_seerr_media_details(media_type, tmdb_id)
+    if media_details is None:
+        logging.warning('Unable to fetch Seerr media details for issue %s: %s', issue.get('id'), error)
+        return {}
+    return media_details
+
+
+def apply_media_details(issue, media_details):
+    if not media_details:
+        return
+
+    display_title = media_details.get('title') or media_details.get('name')
+    if display_title:
+        issue['display_title'] = display_title
+
+    display_year = _extract_year(media_details.get('releaseDate') or media_details.get('firstAirDate'))
+    if display_year:
+        issue['display_year'] = display_year
+
+
+def enrich_target_with_media_details(target, media_details):
+    if not media_details:
+        return target
+
+    original_language = media_details.get('originalLanguage')
+    if original_language:
+        target['original_language'] = original_language
+        target['original_language_name'] = _format_language_name(original_language)
+    return target
+
 
 def parse_seerr_issue_url(text):
     if not text:
@@ -142,9 +236,7 @@ def get_open_seerr_issues():
             media_details_cache[cache_key] = media_details or {}
 
         media_details = media_details_cache.get(cache_key) or {}
-        display_title = media_details.get('title') or media_details.get('name')
-        if display_title:
-            issue['display_title'] = display_title
+        apply_media_details(issue, media_details)
         actionable_issues.append(issue)
 
     actionable_issues.sort(key=issue_sort_key, reverse=True)
@@ -171,10 +263,20 @@ def get_issue_type_label(issue):
     return ISSUE_TYPE_LABELS.get(issue.get('issueType'))
 
 
+def get_issue_display_year(issue):
+    media = issue.get('media') or {}
+    return (
+        issue.get('display_year')
+        or _extract_year(media.get('releaseDate'))
+        or _extract_year(media.get('firstAirDate'))
+    )
+
+
 def build_issue_label(issue):
     media = issue.get('media') or {}
     media_type = media.get('mediaType') or ''
     title = get_issue_display_title(issue)
+    year = get_issue_display_year(issue)
     issue_type = get_issue_type_label(issue)
 
     season = issue.get('problemSeason')
@@ -183,6 +285,12 @@ def build_issue_label(issue):
         ep_tag = f' S{season:02d}E{episode:02d}'
     else:
         ep_tag = ''
+
+    if media_type == 'movie' and year:
+        title = f'{title} ({year})'
+
+    if issue_type == 'Other':
+        issue_type = None
 
     if issue_type:
         return f'{title}{ep_tag} - {issue_type}'
@@ -682,9 +790,18 @@ def process_sonarr_redownload(target):
 
 def build_redownload_confirmation(target):
     service = target.get('service') or ('Radarr4k' if target.get('is_4k') else 'Radarr')
+    original_language = target.get('original_language_name')
+    warning = ''
+    if original_language and original_language != 'English':
+        media_name = 'movie' if target.get('media_type') == 'movie' else 'episode'
+        warning = (
+            f'Warning: original language is {original_language}.\n'
+            f'This {media_name} may not be available in English at all. Continue only if you still want to replace it.\n\n'
+        )
     issue_line = f"Issue: #{target['issue_id']}\n" if target.get('issue_id') else ''
     file_line = f"Current file: {target.get('file_path', 'Unknown')}\n"
     return (
+        f'{warning}'
         f"Ready to replace the current release for {target['label']}.\n"
         f"{issue_line}"
         f"{file_line}"
@@ -729,6 +846,8 @@ def resolve_redownload_issue(url):
         issue, error = get_seerr_issue(issue_id)
         if issue is None:
             return None, error
+        media_details = get_issue_media_details(issue)
+        apply_media_details(issue, media_details)
     else:
         issue, media_details, error = find_seerr_issue_for_media(reference['media_type'], reference['tmdb_id'])
         if issue is None:
@@ -743,6 +862,7 @@ def resolve_redownload_issue(url):
         return None, error
 
     target['issue_id'] = issue_id
+    enrich_target_with_media_details(target, media_details)
     if media_details:
         target['label'] = build_target_label(issue, media_details, target)
     if target['media_type'] == 'movie':
@@ -761,9 +881,11 @@ def execute_redownload(target):
     issue_id = target.get('issue_id')
     if issue_id and 'Blacklisted' in (result or ''):
         success, error = resolve_seerr_issue(issue_id)
+        result_text = result or ''
         if success:
-            result += f' Seerr issue #{issue_id} has been resolved.'
+            result_text += f' Seerr issue #{issue_id} has been resolved.'
         else:
-            result += f' Warning: {error}'
+            result_text += f' Warning: {error}'
+        result = result_text
 
     return result

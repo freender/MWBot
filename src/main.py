@@ -4,7 +4,7 @@ import logging
 import threading
 from datetime import timedelta
 from functools import wraps
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from modules import (
@@ -131,12 +131,13 @@ def _pending_key(chat_id, user_id):
 
 
 def _get_seerr_browser_url():
-    parsed = urlparse(cfg.SEERR_BASE_URL)
-    if parsed.scheme == 'https' and parsed.netloc:
-        return cfg.SEERR_BASE_URL
-    if parsed.netloc == 'overseerr.freender.net':
-        return f'https://{parsed.netloc}'
-    return 'https://overseerr.freender.net'
+    base_url = cfg.SEERR_BASE_URL.strip().rstrip('/')
+    parsed = urlparse(base_url)
+
+    if parsed.netloc:
+        return urlunparse(('https', parsed.netloc, parsed.path.rstrip('/'), '', '', ''))
+
+    return f"https://{base_url.lstrip('/')}"
 
 
 # ── Inline Keyboard Helpers ──────────────────────────────────────────
@@ -147,10 +148,10 @@ def _cancel_markup():
     return markup
 
 
-def _confirm_cancel_markup(confirm_data):
+def _confirm_cancel_markup(confirm_data, confirm_label='Confirm'):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
-        InlineKeyboardButton('Confirm', callback_data=confirm_data),
+        InlineKeyboardButton(confirm_label, callback_data=confirm_data),
         InlineKeyboardButton('Cancel', callback_data='cancel'),
     )
     return markup
@@ -689,10 +690,11 @@ def handle_callback(call):
             return
         key = _pending_key(chat_id, user_id)
         _pending_redownloads[key] = target
+        confirm_label = 'Continue Anyway' if target.get('original_language_name') and target.get('original_language_name') != 'English' else 'Confirm'
         bot.send_message(
             chat_id,
             build_redownload_confirmation(target),
-            reply_markup=_confirm_cancel_markup('redownload_confirm'),
+            reply_markup=_confirm_cancel_markup('redownload_confirm', confirm_label=confirm_label),
         )
         return
 
