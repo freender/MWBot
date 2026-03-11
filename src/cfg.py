@@ -26,7 +26,6 @@ def _get_json(name):
 
 
 TOKEN = _require_env('TOKEN')
-TOKEN_STAGING = _require_env('TOKEN_STAGING')
 CHAT_ID = _require_env('CHAT_ID')
 NOTIFY_CHAT_ID = os.getenv('NOTIFY_CHAT_ID', CHAT_ID)
 OWNER = _get_int('OWNER')

@@ -1,7 +1,4 @@
-FROM python:3-slim
-
-# Install cron
-RUN apt-get update && rm -rf /var/lib/apt/lists/*
+FROM python:3.12-slim
 
 WORKDIR /code
 
@@ -15,4 +12,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY ./src ./src
 
 # Start Python app
-CMD ["bash", "-c", "python -u /code/src/main.py --reload"]
+CMD ["python", "-u", "/code/src/main.py"]

@@ -1,6 +1,7 @@
 import logging
 
 import cfg
+from telebot.types import BotCommand
 from modules.common import build_api_headers, normalize_base_url, request_json
 from modules.firewall import (
     add_asn_to_firewall_rule,
@@ -64,49 +65,8 @@ COMMANDS = {
     'reset_ip': 'Disable Plex in unknown place',
     'redownload': 'Blacklist issue release and prevent re-download',
     'mw': 'Open maintenance quick actions',
-    'start_silent': 'Start Silent MW [/start_silent 30m]',
-    'stop_silent': 'Stop Silent MW',
-    'firmware_mw': 'Start Firmware MW and notify Sev1 chat [/firmware_mw 30m, default 5m]',
-    'reboot_mw': 'Start Reboot MW and notify Sev1 chat [/reboot_mw 30m, default 5m]',
-    'generic_mw': 'Start MW and notify Sev1 chat [/generic_mw 30m]',
-    'stop_mw': 'Stop MW and notify Sev1 chat',
-    'mw_status': 'Show active MW timer status',
+    'help': 'Show help',
 }
-
-HELP_SECTIONS = [
-    {
-        'title': 'Plex Access',
-        'icon': '📡',
-        'commands': {
-            'ip': 'Allow Plex from your current location',
-            'reset_ip': 'Remove temporary Plex access',
-        },
-        'footer': 'Menu-first: /start -> Plex Access',
-    },
-    {
-        'title': 'Media',
-        'icon': '🎬',
-        'commands': {
-            'redownload': 'Replace a bad release via Seerr issue',
-        },
-        'footer': 'Menu-first: /start -> Media',
-    },
-    {
-        'title': 'Maintenance',
-        'icon': '🔧',
-        'commands': {
-            'mw': 'Open the maintenance quick-action menu',
-            'start_silent': 'Start silent MW',
-            'generic_mw': 'Start regular MW + notify Sev1',
-            'stop_silent': 'Stop silent MW',
-            'stop_mw': 'Stop MW + notify Sev1',
-            'firmware_mw': 'Firmware MW + notify Sev1 (auto 5m)',
-            'reboot_mw': 'Reboot MW + notify Sev1 (auto 5m)',
-            'mw_status': 'Show active MW timer',
-        },
-        'footer': 'Menu-first: /start -> Maintenance | Custom timers: /start_silent 30m, /generic_mw 2h',
-    },
-]
 
 SEERR_OWNER_USER_ID = 1
 
@@ -233,6 +193,13 @@ def warm_seerr_access_cache():
         len(cache['owner_chat_ids']),
     )
     return cache
+
+
+def register_bot_commands(bot):
+    bot.set_my_commands([
+        BotCommand(name, description)
+        for name, description in COMMANDS.items()
+    ])
 
 
 def is_owner_chat_id(chat_id):

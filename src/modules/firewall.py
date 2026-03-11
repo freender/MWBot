@@ -1,13 +1,13 @@
 import ipaddress
-import json
 import logging
 import time
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
-import pytz
 import requests
 
 import cfg
+from modules.common import request_json
 
 
 def is_valid_ip(ip):
@@ -16,6 +16,8 @@ def is_valid_ip(ip):
         return True
     except (ValueError, TypeError):
         return False
+
+
 def get_asn_from_ip(ip):
     try:
         url = f'http://ip-api.com/json/{ip}?fields=as'
@@ -37,7 +39,7 @@ def get_asn_from_ip(ip):
 
 def convert_to_local_time(timestamp):
     utc_time = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-    server_timezone = pytz.timezone(cfg.TZ)
+    server_timezone = ZoneInfo(cfg.TZ)
     return utc_time.astimezone(server_timezone)
 
 
@@ -55,19 +57,19 @@ def _rule_url():
 
 def _get_waf_rule():
     try:
-        response = requests.get(_ruleset_url(), headers=_cloudflare_headers(), timeout=30)
-        if response.status_code != 200:
-            result = f'Failed to retrieve the rule. Status code: {response.status_code}'
-            logging.error('%s: Response text: %s', result, response.text)
-            return None, result
-
-        rules = response.json().get('result', {}).get('rules', [])
+        payload = request_json('GET', _ruleset_url(), headers=_cloudflare_headers()) or {}
+        rules = payload.get('result', {}).get('rules', [])
         for rule in rules:
             if rule.get('id') == cfg.WAF_RULEID:
                 return rule, None
 
         result = 'Unable to locate the configured WAF rule.'
         logging.error(result)
+        return None, result
+    except requests.exceptions.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else 'unknown'
+        result = f'Failed to retrieve the rule. Status code: {status_code}'
+        logging.error('%s: %s', result, exc)
         return None, result
     except requests.exceptions.RequestException as exc:
         result = f'Unexpected error occurred: {exc}'
@@ -88,11 +90,12 @@ def _build_rule_payload(asns, enabled):
 
 def _update_firewall_rule(rule_data):
     try:
-        response = requests.patch(_rule_url(), headers=_cloudflare_headers(), data=json.dumps(rule_data), timeout=30)
-        if response.status_code == 200:
-            return True, None
-        result = f'Failed to update rule. Status code: {response.status_code}'
-        logging.error('%s: Response text: %s', result, response.text)
+        request_json('PATCH', _rule_url(), headers=_cloudflare_headers(), payload=rule_data)
+        return True, None
+    except requests.exceptions.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else 'unknown'
+        result = f'Failed to update rule. Status code: {status_code}'
+        logging.error('%s: %s', result, exc)
         return False, result
     except requests.exceptions.RequestException as exc:
         result = f'Unexpected error occurred: {exc}'
@@ -107,28 +110,28 @@ def get_asns_from_firewall_rule():
 
     expression = rule.get('expression', '')
     asns = [segment for segment in expression.split('{', 1)[-1].split('}', 1)[0].split() if segment.isdigit()]
-    logging.warning('Old Rule: %s', ' '.join(map(str, asns)))
+    logging.info('Old Rule: %s', ' '.join(map(str, asns)))
     return asns, None
 
 
 def add_asn_to_firewall_rule(asn):
     old_asns, error = get_asns_from_firewall_rule()
     if old_asns is None:
-        result = f'An error occcured while retrieving ASNs from the firewall rule: {error}'
+        result = f'An error occurred while retrieving ASNs from the firewall rule: {error}'
         logging.error(result)
         return result
 
     if asn in old_asns:
         result = f'ASN {asn} already exists in the firewall rule.'
-        logging.warning(result)
+        logging.info(result)
         return result
 
     old_asns.append(asn)
-    logging.warning('New Rule: %s', ' '.join(map(str, old_asns)))
+    logging.info('New Rule: %s', ' '.join(map(str, old_asns)))
     success, error = _update_firewall_rule(_build_rule_payload(old_asns, enabled=True))
     if success:
-        result = f'ASN {asn} has been sucessfully added to the firewall rule.'
-        logging.warning(result)
+        result = f'ASN {asn} has been successfully added to the firewall rule.'
+        logging.info(result)
         return result
     return error
 
@@ -164,7 +167,7 @@ def disable_asn_to_firewall_rule():
     success, error = _update_firewall_rule(rule_data)
     if success:
         result = 'Firewall rule has been disabled.'
-        logging.warning(result)
+        logging.info(result)
         return result
     return error
 
@@ -178,16 +181,16 @@ def get_next_firewall_run(current_time):
 
 def schedule_fw_task():
     while True:
-        current_time = datetime.now(pytz.timezone(cfg.TZ))
+        current_time = datetime.now(ZoneInfo(cfg.TZ))
         next_run = get_next_firewall_run(current_time)
         delay = (next_run - current_time).total_seconds()
 
-        print(f'[{current_time}] Next run scheduled at {next_run} (in {delay} seconds)')
+        logging.info('[%s] Next run scheduled at %s (in %s seconds)', current_time, next_run, delay)
         time.sleep(delay)
 
         status, error = get_rule_status()
         if status is None:
-            result = f'An error occcured while retrieving the rule status: {error}'
+            result = f'An error occurred while retrieving the rule status: {error}'
             logging.error(result)
             continue
 
@@ -198,6 +201,6 @@ def schedule_fw_task():
                 continue
 
             modify_local_time = convert_to_local_time(modify_str)
-            current_time = datetime.now(pytz.timezone(cfg.TZ))
+            current_time = datetime.now(ZoneInfo(cfg.TZ))
             if modify_local_time + timedelta(days=7) < current_time:
                 disable_asn_to_firewall_rule()

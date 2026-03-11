@@ -5,8 +5,8 @@ import re
 import threading
 import time
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
-import pytz
 import socketio.exceptions
 from uptime_kuma_api import UptimeKumaApi, UptimeKumaException
 
@@ -108,7 +108,7 @@ def clear_mw_state():
 
 
 def build_mw_state(duration, notify_chat_id=None, notify_message_id=None, reason=None):
-    expires_at = datetime.now(pytz.timezone(cfg.TZ)) + duration
+    expires_at = datetime.now(ZoneInfo(cfg.TZ)) + duration
     return {
         'expires_at': expires_at.isoformat(),
         'duration': format_duration(duration),
@@ -124,7 +124,7 @@ def get_mw_status_text(state=None):
         return 'No timed maintenance window is active.'
 
     expires_at = datetime.fromisoformat(active_state['expires_at'])
-    now = datetime.now(pytz.timezone(cfg.TZ))
+    now = datetime.now(ZoneInfo(cfg.TZ))
     remaining = expires_at - now
     if remaining.total_seconds() <= 0:
         return 'Timed maintenance window has expired and is waiting for cleanup.'
@@ -201,7 +201,7 @@ def maintain_timed_mw(bot, poll_interval=30):
         state = load_mw_state()
         if state:
             expires_at = datetime.fromisoformat(state['expires_at'])
-            now = datetime.now(pytz.timezone(cfg.TZ))
+            now = datetime.now(ZoneInfo(cfg.TZ))
             if expires_at <= now:
                 logging.info(
                     'Timed MW expired for %s at %s; running cleanup',

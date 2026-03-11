@@ -641,32 +641,43 @@ def resolve_episode_replacement(target):
     return target, None
 
 
-def process_radarr_redownload(target):
-    movie_id = target['movie_id']
+def _process_arr_redownload(
+    target,
+    item_id,
+    id_key,
+    queue_params,
+    history_path,
+    history_params,
+    no_history_message,
+    delete_file_fn,
+    trigger_search_fn,
+):
     _service_name, base_url, api_key = get_arr_service(target)
     queue_url = f"{normalize_base_url(base_url)}/api/v3/queue"
-    history_url = f"{normalize_base_url(base_url)}/api/v3/history/movie"
+    history_url = f"{normalize_base_url(base_url)}/{history_path.lstrip('/')}"
+    service_label = target.get('service') or _service_name
 
     try:
         queue_items = extract_records(request_json(
             'GET',
             queue_url,
             headers=build_api_headers(api_key),
-            params={'movieIds': movie_id},
+            params=queue_params,
         ))
     except requests.exceptions.HTTPError as exc:
         status_code = exc.response.status_code if exc.response is not None else 'unknown'
-        logging.error('Unable to fetch Radarr queue for movie %s: %s', movie_id, exc)
-        return f'Radarr request failed with status {status_code}.'
+        logging.error('Unable to fetch %s queue for %s %s: %s', service_label, id_key, item_id, exc)
+        return f'{service_label} request failed with status {status_code}.'
     except requests.exceptions.RequestException as exc:
-        logging.error('Unable to fetch Radarr queue for movie %s: %s', movie_id, exc)
-        return 'Unable to reach Radarr.'
+        logging.error('Unable to fetch %s queue for %s %s: %s', service_label, id_key, item_id, exc)
+        return f'Unable to reach {service_label}.'
 
-    queue_item = find_queue_item(queue_items, 'movieId', movie_id)
+    queue_item = find_queue_item(queue_items, id_key, item_id)
     if queue_item is not None:
         success, error = delete_queue_item(base_url, api_key, queue_item['id'])
         if success:
-            return f"Blacklisted and removed queued movie release for {target['label']}."
+            media_label = 'movie' if target['media_type'] == 'movie' else 'episode'
+            return f"Blacklisted and removed queued {media_label} release for {target['label']}."
         return error
 
     try:
@@ -674,119 +685,75 @@ def process_radarr_redownload(target):
             'GET',
             history_url,
             headers=build_api_headers(api_key),
-            params={'movieId': movie_id},
+            params=history_params,
         ) or {}
     except requests.exceptions.HTTPError as exc:
         status_code = exc.response.status_code if exc.response is not None else 'unknown'
-        logging.error('Unable to fetch Radarr history for movie %s: %s', movie_id, exc)
-        return f'Radarr request failed with status {status_code}.'
+        logging.error('Unable to fetch %s history for %s %s: %s', service_label, id_key, item_id, exc)
+        return f'{service_label} request failed with status {status_code}.'
     except requests.exceptions.RequestException as exc:
-        logging.error('Unable to fetch Radarr history for movie %s: %s', movie_id, exc)
-        return 'Unable to reach Radarr.'
+        logging.error('Unable to fetch %s history for %s %s: %s', service_label, id_key, item_id, exc)
+        return f'Unable to reach {service_label}.'
 
     history_records = extract_records(history)
-    imported_record = find_imported_history_record(history_records, 'movieId', movie_id)
+    imported_record = find_imported_history_record(history_records, id_key, item_id)
     grabbed_record = None
     if imported_record is not None:
-        grabbed_record = find_grabbed_record_for_import(history_records, imported_record, 'movieId', movie_id)
+        grabbed_record = find_grabbed_record_for_import(history_records, imported_record, id_key, item_id)
     if grabbed_record is None:
-        grabbed_record = select_failed_history_record(history_records, 'movieId', movie_id)
+        grabbed_record = select_failed_history_record(history_records, id_key, item_id)
     if grabbed_record is None:
-        return 'No matching Radarr grabbed history entry was found for the current movie file.'
+        return no_history_message
 
     success, error = mark_history_failed(base_url, api_key, grabbed_record['id'])
     if not success:
         return error
 
     if not target.get('file_id'):
-        search_success, search_error = trigger_movie_search(base_url, api_key, movie_id)
+        search_success, search_error = trigger_search_fn(base_url, api_key, item_id)
         if search_success:
             return f"Blacklisted release for {target['label']} and triggered a fresh search. No current file was present to delete."
         return f"Blacklisted release for {target['label']}, but fresh search failed: {search_error}"
 
-    delete_success, delete_error = delete_movie_file(base_url, api_key, target['file_id'])
+    delete_success, delete_error = delete_file_fn(base_url, api_key, target['file_id'])
     if not delete_success:
         return f"Blacklisted release for {target['label']}, but deleting the current file failed: {delete_error}"
 
-    search_success, search_error = trigger_movie_search(base_url, api_key, movie_id)
+    search_success, search_error = trigger_search_fn(base_url, api_key, item_id)
     if not search_success:
         return f"Blacklisted release and deleted the current file for {target['label']}, but fresh search failed: {search_error}"
 
     return f"Blacklisted release, deleted the current file, and triggered a fresh search for {target['label']}."
+
+
+def process_radarr_redownload(target):
+    movie_id = target['movie_id']
+    return _process_arr_redownload(
+        target,
+        movie_id,
+        'movieId',
+        {'movieIds': movie_id},
+        '/api/v3/history/movie',
+        {'movieId': movie_id},
+        'No matching Radarr grabbed history entry was found for the current movie file.',
+        delete_movie_file,
+        trigger_movie_search,
+    )
 
 
 def process_sonarr_redownload(target):
-    _service_name, base_url, api_key = get_arr_service(target)
     episode_id = target['episode_id']
-    queue_url = f"{normalize_base_url(base_url)}/api/v3/queue"
-    history_url = f"{normalize_base_url(base_url)}/api/v3/history"
-
-    try:
-        queue_items = extract_records(request_json(
-            'GET',
-            queue_url,
-            headers=build_api_headers(api_key),
-            params={'seriesIds': target['series_id'], 'includeEpisode': 'true'},
-        ))
-    except requests.exceptions.HTTPError as exc:
-        status_code = exc.response.status_code if exc.response is not None else 'unknown'
-        logging.error('Unable to fetch Sonarr queue for series %s: %s', target['series_id'], exc)
-        return f'Sonarr request failed with status {status_code}.'
-    except requests.exceptions.RequestException as exc:
-        logging.error('Unable to fetch Sonarr queue for series %s: %s', target['series_id'], exc)
-        return 'Unable to reach Sonarr.'
-
-    queue_item = find_queue_item(queue_items, 'episodeId', episode_id)
-    if queue_item is not None:
-        success, error = delete_queue_item(base_url, api_key, queue_item['id'])
-        if success:
-            return f"Blacklisted and removed queued episode release for {target['label']}."
-        return error
-
-    try:
-        history = request_json(
-            'GET',
-            history_url,
-            headers=build_api_headers(api_key),
-            params={'episodeId': episode_id, 'includeEpisode': 'true', 'includeSeries': 'true'},
-        ) or {}
-    except requests.exceptions.HTTPError as exc:
-        status_code = exc.response.status_code if exc.response is not None else 'unknown'
-        logging.error('Unable to fetch Sonarr history for episode %s: %s', episode_id, exc)
-        return f'Sonarr request failed with status {status_code}.'
-    except requests.exceptions.RequestException as exc:
-        logging.error('Unable to fetch Sonarr history for episode %s: %s', episode_id, exc)
-        return 'Unable to reach Sonarr.'
-
-    history_records = extract_records(history)
-    imported_record = find_imported_history_record(history_records, 'episodeId', episode_id)
-    grabbed_record = None
-    if imported_record is not None:
-        grabbed_record = find_grabbed_record_for_import(history_records, imported_record, 'episodeId', episode_id)
-    if grabbed_record is None:
-        grabbed_record = select_failed_history_record(history_records, 'episodeId', episode_id)
-    if grabbed_record is None:
-        return 'No matching Sonarr grabbed history entry was found for the current episode file.'
-
-    success, error = mark_history_failed(base_url, api_key, grabbed_record['id'])
-    if not success:
-        return error
-
-    if not target.get('file_id'):
-        search_success, search_error = trigger_episode_search(base_url, api_key, episode_id)
-        if search_success:
-            return f"Blacklisted release for {target['label']} and triggered a fresh search. No current file was present to delete."
-        return f"Blacklisted release for {target['label']}, but fresh search failed: {search_error}"
-
-    delete_success, delete_error = delete_episode_file(base_url, api_key, target['file_id'])
-    if not delete_success:
-        return f"Blacklisted release for {target['label']}, but deleting the current file failed: {delete_error}"
-
-    search_success, search_error = trigger_episode_search(base_url, api_key, episode_id)
-    if not search_success:
-        return f"Blacklisted release and deleted the current file for {target['label']}, but fresh search failed: {search_error}"
-
-    return f"Blacklisted release, deleted the current file, and triggered a fresh search for {target['label']}."
+    return _process_arr_redownload(
+        target,
+        episode_id,
+        'episodeId',
+        {'seriesIds': target['series_id'], 'includeEpisode': 'true'},
+        '/api/v3/history',
+        {'episodeId': episode_id, 'includeEpisode': 'true', 'includeSeries': 'true'},
+        'No matching Sonarr grabbed history entry was found for the current episode file.',
+        delete_episode_file,
+        trigger_episode_search,
+    )
 
 
 def build_redownload_confirmation(target):

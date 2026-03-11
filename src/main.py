@@ -26,8 +26,8 @@ from modules import (
     is_owner,
     is_valid_ip,
     maintain_timed_mw,
-    parse_duration,
     replace_mw_state,
+    register_bot_commands,
     resolve_redownload_issue,
     schedule_fw_task,
     start_mw,
@@ -129,13 +129,6 @@ def safe_command(handler):
             bot.reply_to(message, error_msg)
 
     return wrapper
-
-
-def parse_duration_argument(message):
-    parts = (message.text or '').split(maxsplit=1)
-    if len(parts) < 2:
-        return None, None
-    return parse_duration(parts[1])
 
 
 def _get_user_id(message):
@@ -371,14 +364,8 @@ def _show_maintenance_result(chat_id, text, message_id=None):
     )
 
 
-def _selected_duration(duration, default_duration=None):
-    if duration is not None:
-        return duration
-    return default_duration
-
-
 def _start_silent_mw(duration=None, default_duration=None, reason='Silent maintenance window'):
-    selected_duration = _selected_duration(duration, default_duration)
+    selected_duration = duration if duration is not None else default_duration
     result = start_mw()
     if result == 'MW has been started' and selected_duration is not None:
         replace_mw_state(bot, build_mw_state(selected_duration, reason=reason))
@@ -387,7 +374,7 @@ def _start_silent_mw(duration=None, default_duration=None, reason='Silent mainte
 
 
 def _start_notified_mw(notification_text, duration=None, default_duration=None, reason='Maintenance window'):
-    selected_duration = _selected_duration(duration, default_duration)
+    selected_duration = duration if duration is not None else default_duration
     result = start_mw()
     if result != 'MW has been started':
         return result
@@ -443,12 +430,6 @@ def _build_help_text():
         '/ip — Allow Plex from your current location',
         '/redownload — Replace a bad release from Seerr',
         '/mw — Open maintenance quick actions',
-        '',
-        '<b>Timed MW Examples</b>',
-        '/start_silent 30m',
-        '/generic_mw 2h',
-        '/reboot_mw 15m',
-        '/firmware_mw 30m',
     ])
 
 
@@ -533,99 +514,10 @@ def _start_redownload_flow(chat_id, user_id, message_id=None):
             )
 
 
-# ── Maintenance Windows ──────────────────────────────────────────────
-
-def _parse_mw_duration(message):
-    return parse_duration_argument(message)
-
-
-@bot.message_handler(commands=['start_silent'])
-@safe_command
-@owner_only
-def command_start_silent(message):
-    duration, error = parse_duration_argument(message)
-    if error is not None:
-        bot.reply_to(message, error)
-        return
-    bot.send_chat_action(message.chat.id, 'typing')
-    result = _start_silent_mw(duration=duration)
-    bot.reply_to(message, result)
-
-@bot.message_handler(commands=['stop_silent'])
-@safe_command
-@owner_only
-def command_stop_silent(message):
-    bot.send_chat_action(message.chat.id, 'typing')
-    result = _stop_silent_mw()
-    bot.reply_to(message, result)
-
-@bot.message_handler(commands=['firmware_mw'])
-@safe_command
-@owner_only
-def command_firmware_mw(message):
-    duration, error = _parse_mw_duration(message)
-    if error is not None:
-        bot.reply_to(message, error)
-        return
-    bot.send_chat_action(message.chat.id, 'typing')
-    result = _start_notified_mw(
-        'NAS: Server Status \nFirmware update. \nETA - 5 minutes',
-        duration=duration,
-        default_duration=DEFAULT_FIRMWARE_MW_DURATION,
-        reason='Firmware maintenance',
-    )
-    bot.reply_to(message, result)
-
-@bot.message_handler(commands=['reboot_mw'])
-@safe_command
-@owner_only
-def command_reboot_mw(message):
-    duration, error = _parse_mw_duration(message)
-    if error is not None:
-        bot.reply_to(message, error)
-        return
-    bot.send_chat_action(message.chat.id, 'typing')
-    result = _start_notified_mw(
-        'NAS: Server Status \nNAS is going to be rebooted. \nETA - 5 minutes',
-        duration=duration,
-        default_duration=DEFAULT_REBOOT_MW_DURATION,
-        reason='Reboot maintenance',
-    )
-    bot.reply_to(message, result)
-
-@bot.message_handler(commands=['generic_mw'])
-@safe_command
-@owner_only
-def command_generic_mw(message):
-    duration, error = _parse_mw_duration(message)
-    if error is not None:
-        bot.reply_to(message, error)
-        return
-    bot.send_chat_action(message.chat.id, 'typing')
-    result = _start_notified_mw(
-        'NAS: Server Status \nMaintenance window has been started.  \nThis may take awhile',
-        duration=duration,
-    )
-    bot.reply_to(message, result)
-
-@bot.message_handler(commands=['stop_mw'])
-@safe_command
-@owner_only
-def command_stop_mw(message):
-    bot.send_chat_action(message.chat.id, 'typing')
-    result = _stop_notified_mw()
-    bot.reply_to(message, result)
-
-
-@bot.message_handler(commands=['mw_status'])
-@owner_only
-def command_mw_status(message):
-    bot.reply_to(message, get_mw_status_text())
-
-
 # ── /ip ──────────────────────────────────────────────────────────────
 
 @bot.message_handler(commands=['ip'])
+@safe_command
 @auth_user_only
 def command_allow_cdn(message):
     _start_ip_flow(message.chat.id, _get_user_id(message))
@@ -699,130 +591,189 @@ def ip(message):
 
 # ── Callback Queries (inline button presses) ────────────────────────
 
+def _answer_not_allowed(chat_id):
+    bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
+
+
+def _require_auth_callback(call):
+    bot.answer_callback_query(call.id)
+    if not is_auth_chat_id(call.from_user.id):
+        _answer_not_allowed(call.message.chat.id)
+        return False
+    return True
+
+
+def _require_owner_callback(call):
+    bot.answer_callback_query(call.id)
+    if not is_owner_chat_id(call.from_user.id):
+        _answer_not_allowed(call.message.chat.id)
+        return False
+    return True
+
+
+def _handle_cancel(call):
+    chat_id = call.message.chat.id
+    user_id = call.from_user.id
+    _clear_flow(chat_id)
+    key = _pending_key(chat_id, user_id)
+    _pending_redownloads.pop(key, None)
+    bot.clear_step_handler_by_chat_id(chat_id)
+    bot.edit_message_reply_markup(
+        chat_id=chat_id,
+        message_id=call.message.message_id,
+        reply_markup=None,
+    )
+    bot.answer_callback_query(call.id, text='Cancelled')
+
+
+def _handle_menu_close(call):
+    bot.answer_callback_query(call.id, text='Closed')
+    bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=None)
+
+
+def _handle_nav_home(call):
+    bot.answer_callback_query(call.id)
+    _show_home_menu(call.message.chat.id, user_id=call.from_user.id, message_id=call.message.message_id)
+
+
+def _handle_nav_plex(call):
+    if not _require_auth_callback(call):
+        return
+    _show_plex_menu(call.message.chat.id, message_id=call.message.message_id)
+
+
+def _handle_nav_media(call):
+    if not _require_auth_callback(call):
+        return
+    _show_media_menu(call.message.chat.id, message_id=call.message.message_id)
+
+
+def _handle_nav_mw(call):
+    if not _require_owner_callback(call):
+        return
+    _show_maintenance_menu(call.message.chat.id, message_id=call.message.message_id)
+
+
+def _handle_plex_allow(call):
+    if not _require_auth_callback(call):
+        return
+    _start_ip_flow(call.message.chat.id, call.from_user.id, message_id=call.message.message_id)
+
+
+def _handle_plex_reset(call):
+    if not _require_owner_callback(call):
+        return
+    chat_id = call.message.chat.id
+    bot.send_chat_action(chat_id, 'typing')
+    result = disable_asn_to_firewall_rule()
+    _show_plex_result(chat_id, result or 'Unable to update firewall rule.', message_id=call.message.message_id)
+
+
+def _handle_media_redownload(call):
+    if not _require_auth_callback(call):
+        return
+    _start_redownload_flow(call.message.chat.id, call.from_user.id, message_id=call.message.message_id)
+
+
+def _handle_help(call):
+    bot.answer_callback_query(call.id)
+    bot.send_message(call.message.chat.id, _build_help_text(), parse_mode='HTML')
+
+
+def _handle_mw_action(call, result):
+    _show_maintenance_result(call.message.chat.id, result, message_id=call.message.message_id)
+
+
+def _handle_mw_start_silent(call):
+    if not _require_owner_callback(call):
+        return
+    bot.send_chat_action(call.message.chat.id, 'typing')
+    _handle_mw_action(call, _start_silent_mw())
+
+
+def _handle_mw_start_regular(call):
+    if not _require_owner_callback(call):
+        return
+    bot.send_chat_action(call.message.chat.id, 'typing')
+    _handle_mw_action(call, _start_notified_mw('NAS: Server Status \nMaintenance window has been started.  \nThis may take awhile'))
+
+
+def _handle_mw_reboot_default(call):
+    if not _require_owner_callback(call):
+        return
+    bot.send_chat_action(call.message.chat.id, 'typing')
+    _handle_mw_action(call, _start_notified_mw(
+        'NAS: Server Status \nNAS is going to be rebooted. \nETA - 5 minutes',
+        default_duration=DEFAULT_REBOOT_MW_DURATION,
+        reason='Reboot maintenance',
+    ))
+
+
+def _handle_mw_firmware_default(call):
+    if not _require_owner_callback(call):
+        return
+    bot.send_chat_action(call.message.chat.id, 'typing')
+    _handle_mw_action(call, _start_notified_mw(
+        'NAS: Server Status \nFirmware update. \nETA - 5 minutes',
+        default_duration=DEFAULT_FIRMWARE_MW_DURATION,
+        reason='Firmware maintenance',
+    ))
+
+
+def _handle_mw_stop_silent(call):
+    if not _require_owner_callback(call):
+        return
+    bot.send_chat_action(call.message.chat.id, 'typing')
+    _handle_mw_action(call, _stop_silent_mw())
+
+
+def _handle_mw_stop_regular(call):
+    if not _require_owner_callback(call):
+        return
+    bot.send_chat_action(call.message.chat.id, 'typing')
+    _handle_mw_action(call, _stop_notified_mw())
+
+
+def _handle_mw_status(call):
+    if not _require_owner_callback(call):
+        return
+    bot.send_chat_action(call.message.chat.id, 'typing')
+    _handle_mw_action(call, get_mw_status_text())
+
+
+CALLBACK_HANDLERS = {
+    'cancel': _handle_cancel,
+    'menu_close': _handle_menu_close,
+    'nav_home': _handle_nav_home,
+    'nav_plex': _handle_nav_plex,
+    'nav_media': _handle_nav_media,
+    'nav_mw': _handle_nav_mw,
+    'cmd_mw': _handle_nav_mw,
+    'plex_allow': _handle_plex_allow,
+    'cmd_ip': _handle_plex_allow,
+    'plex_reset': _handle_plex_reset,
+    'media_redownload': _handle_media_redownload,
+    'cmd_redownload': _handle_media_redownload,
+    'cmd_help': _handle_help,
+    'mw_start_silent': _handle_mw_start_silent,
+    'mw_start_regular': _handle_mw_start_regular,
+    'mw_reboot_default': _handle_mw_reboot_default,
+    'mw_firmware_default': _handle_mw_firmware_default,
+    'mw_stop_silent': _handle_mw_stop_silent,
+    'mw_stop_regular': _handle_mw_stop_regular,
+    'mw_status': _handle_mw_status,
+}
+
+
 @bot.callback_query_handler(func=lambda call: True)
 def handle_callback(call):
     data = call.data
     chat_id = call.message.chat.id
     user_id = call.from_user.id
 
-    # Cancel — universal handler
-    if data == 'cancel':
-        _clear_flow(chat_id)
-        key = _pending_key(chat_id, user_id)
-        _pending_redownloads.pop(key, None)
-        bot.clear_step_handler_by_chat_id(chat_id)
-        bot.edit_message_reply_markup(
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-            reply_markup=None,
-        )
-        bot.answer_callback_query(call.id, text='Cancelled')
-        return
-
-    if data == 'menu_close':
-        bot.answer_callback_query(call.id, text='Closed')
-        bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
-        return
-
-    if data == 'nav_home':
-        bot.answer_callback_query(call.id)
-        _show_home_menu(chat_id, user_id=user_id, message_id=call.message.message_id)
-        return
-
-    if data == 'nav_plex':
-        bot.answer_callback_query(call.id)
-        if not is_auth_chat_id(user_id):
-            bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
-            return
-        _show_plex_menu(chat_id, message_id=call.message.message_id)
-        return
-
-    if data == 'nav_media':
-        bot.answer_callback_query(call.id)
-        if not is_auth_chat_id(user_id):
-            bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
-            return
-        _show_media_menu(chat_id, message_id=call.message.message_id)
-        return
-
-    if data in ('nav_mw', 'cmd_mw'):
-        bot.answer_callback_query(call.id)
-        if not is_owner_chat_id(user_id):
-            bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
-            return
-        _show_maintenance_menu(chat_id, message_id=call.message.message_id)
-        return
-
-    if data in ('plex_allow', 'cmd_ip'):
-        bot.answer_callback_query(call.id)
-        if not is_auth_chat_id(user_id):
-            bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
-            return
-        _start_ip_flow(chat_id, user_id, message_id=call.message.message_id)
-        return
-
-    if data == 'plex_reset':
-        bot.answer_callback_query(call.id)
-        if not is_owner_chat_id(user_id):
-            bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
-            return
-        bot.send_chat_action(chat_id, 'typing')
-        result = disable_asn_to_firewall_rule()
-        _show_plex_result(chat_id, result or 'Unable to update firewall rule.', message_id=call.message.message_id)
-        return
-
-    if data in ('media_redownload', 'cmd_redownload'):
-        bot.answer_callback_query(call.id)
-        if not is_auth_chat_id(user_id):
-            bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
-            return
-        _start_redownload_flow(chat_id, user_id, message_id=call.message.message_id)
-        return
-
-    if data == 'cmd_help':
-        bot.answer_callback_query(call.id)
-        bot.send_message(chat_id, _build_help_text(), parse_mode='HTML')
-        return
-
-    if data.startswith('mw_'):
-        bot.answer_callback_query(call.id)
-        if not is_owner_chat_id(user_id):
-            bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
-            return
-
-        bot.send_chat_action(chat_id, 'typing')
-        if data == 'mw_start_silent':
-            _show_maintenance_result(chat_id, _start_silent_mw(), message_id=call.message.message_id)
-            return
-        if data == 'mw_start_regular':
-            _show_maintenance_result(chat_id, _start_notified_mw(
-                'NAS: Server Status \nMaintenance window has been started.  \nThis may take awhile'
-            ), message_id=call.message.message_id)
-            return
-        if data == 'mw_reboot_default':
-            _show_maintenance_result(chat_id, _start_notified_mw(
-                'NAS: Server Status \nNAS is going to be rebooted. \nETA - 5 minutes',
-                default_duration=DEFAULT_REBOOT_MW_DURATION,
-                reason='Reboot maintenance',
-            ), message_id=call.message.message_id)
-            return
-        if data == 'mw_firmware_default':
-            _show_maintenance_result(chat_id, _start_notified_mw(
-                'NAS: Server Status \nFirmware update. \nETA - 5 minutes',
-                default_duration=DEFAULT_FIRMWARE_MW_DURATION,
-                reason='Firmware maintenance',
-            ), message_id=call.message.message_id)
-            return
-        if data == 'mw_stop_silent':
-            _show_maintenance_result(chat_id, _stop_silent_mw(), message_id=call.message.message_id)
-            return
-        if data == 'mw_stop_regular':
-            _show_maintenance_result(chat_id, _stop_notified_mw(), message_id=call.message.message_id)
-            return
-        if data == 'mw_status':
-            _show_maintenance_result(chat_id, get_mw_status_text(), message_id=call.message.message_id)
-            return
-
+    handler = CALLBACK_HANDLERS.get(data)
+    if handler is not None:
+        handler(call)
         return
 
     # Redownload: user picked an issue from the list
@@ -892,6 +843,7 @@ def command_unknown(message):
 
 def main():
     warm_seerr_access_cache()
+    register_bot_commands(bot)
     start_background_threads(bot)
     bot.infinity_polling()
 

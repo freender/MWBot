@@ -1,18 +1,17 @@
 import importlib
 import os
+from pathlib import Path
 import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 from unittest import mock
-
-import pytz
 
 
 def load_modules_package(temp_dir):
     env = {
         'TOKEN': 'token',
-        'TOKEN_STAGING': 'token-staging',
         'CHAT_ID': '100',
         'NOTIFY_CHAT_ID': '200',
         'OWNER': '1',
@@ -40,7 +39,9 @@ def load_modules_package(temp_dir):
         'RADARR4K_API_KEY': 'radarr4k-key',
     }
     os.environ.update(env)
-    sys.path.insert(0, '/home/freender/mwbot/src')
+    src_path = str(Path(__file__).resolve().parents[1] / 'src')
+    if src_path not in sys.path:
+        sys.path.insert(0, src_path)
     for name in [
         'cfg',
         'modules',
@@ -101,15 +102,10 @@ class ModulesTest(unittest.TestCase):
     def test_command_metadata_includes_maintenance_menu_and_short_defaults(self):
         self.assertIn('mw', self.modules.COMMANDS)
         self.assertEqual(self.modules.COMMANDS['start'], 'Open main menu')
-        self.assertIn('default 5m', self.modules.COMMANDS['firmware_mw'])
-        self.assertIn('default 5m', self.modules.COMMANDS['reboot_mw'])
-
-        plex_section = next(section for section in self.modules.HELP_SECTIONS if section['title'] == 'Plex Access')
-        self.assertIn('/start -> Plex Access', plex_section['footer'])
-
-        maintenance_section = next(section for section in self.modules.HELP_SECTIONS if section['title'] == 'Maintenance')
-        self.assertEqual(maintenance_section['commands']['mw'], 'Open the maintenance quick-action menu')
-        self.assertIn('/start -> Maintenance', maintenance_section['footer'])
+        self.assertEqual(self.modules.COMMANDS['mw'], 'Open maintenance quick actions')
+        self.assertEqual(self.modules.COMMANDS['help'], 'Show help')
+        self.assertNotIn('firmware_mw', self.modules.COMMANDS)
+        self.assertNotIn('reboot_mw', self.modules.COMMANDS)
 
     def test_parse_seerr_issue_url(self):
         issue_id, error = self.modules.parse_seerr_issue_url('https://seerr.example.com/issues/29')
@@ -581,7 +577,7 @@ class ModulesTest(unittest.TestCase):
         self.assertEqual(self.modules.load_mw_state()['notify_message_id'], 77)
 
     def test_maintain_timed_mw_sends_failure_message(self):
-        expired_at = datetime.now(pytz.timezone(self.cfg.TZ)) - timedelta(minutes=1)
+        expired_at = datetime.now(ZoneInfo(self.cfg.TZ)) - timedelta(minutes=1)
         self.modules.save_mw_state({
             'expires_at': expired_at.isoformat(),
             'duration': '30m',
@@ -606,9 +602,7 @@ class ModulesTest(unittest.TestCase):
         self.assertFalse(self.modules.is_valid_ip(''))
 
     def test_get_rule_status_uses_shared_rule_fetch(self):
-        response = mock.Mock()
-        response.status_code = 200
-        response.json.return_value = {
+        payload = {
             'result': {
                 'rules': [
                     {'id': 'rule', 'enabled': True, 'last_updated': '2026-03-10T00:00:00.000Z'},
@@ -616,7 +610,7 @@ class ModulesTest(unittest.TestCase):
             }
         }
 
-        with mock.patch.object(self.firewall.requests, 'get', return_value=response):
+        with mock.patch.object(self.firewall, 'request_json', return_value=payload):
             enabled, error = self.modules.get_rule_status()
 
         self.assertTrue(enabled)
@@ -645,22 +639,23 @@ class ModulesTest(unittest.TestCase):
         self.assertIn('ASN for this IP is not found', error)
 
     def test_get_next_firewall_run_uses_same_day_when_before_window(self):
-        current_time = datetime(2026, 3, 10, 1, 15, tzinfo=pytz.UTC)
+        current_time = datetime(2026, 3, 10, 1, 15, tzinfo=ZoneInfo('UTC'))
         next_run = self.modules.get_next_firewall_run(current_time)
 
-        self.assertEqual(next_run, datetime(2026, 3, 10, 3, 40, tzinfo=pytz.UTC))
+        self.assertEqual(next_run, datetime(2026, 3, 10, 3, 40, tzinfo=ZoneInfo('UTC')))
 
     def test_get_next_firewall_run_rolls_to_next_day_after_window(self):
-        current_time = datetime(2026, 3, 10, 4, 0, tzinfo=pytz.UTC)
+        current_time = datetime(2026, 3, 10, 4, 0, tzinfo=ZoneInfo('UTC'))
         next_run = self.modules.get_next_firewall_run(current_time)
 
-        self.assertEqual(next_run, datetime(2026, 3, 11, 3, 40, tzinfo=pytz.UTC))
+        self.assertEqual(next_run, datetime(2026, 3, 11, 3, 40, tzinfo=ZoneInfo('UTC')))
 
     def test_cfg_missing_required_variable_raises_helpful_error(self):
         os.environ.pop('TOKEN', None)
         sys.modules.pop('cfg', None)
         with self.assertRaisesRegex(RuntimeError, 'Missing required environment variable: TOKEN'):
             importlib.import_module('cfg')
+        os.environ['TOKEN'] = 'token'
 
 
 if __name__ == '__main__':
