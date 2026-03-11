@@ -2,6 +2,7 @@ import telebot
 import cfg
 import logging
 import threading
+from datetime import timedelta
 from functools import wraps
 from urllib.parse import urlparse
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -35,6 +36,9 @@ from modules import (
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 bot = telebot.TeleBot(cfg.TOKEN)
+
+DEFAULT_REBOOT_MW_DURATION = timedelta(minutes=5)
+DEFAULT_FIRMWARE_MW_DURATION = timedelta(minutes=5)
 
 # -- Pending redownload targets keyed by "chat_id:user_id" --
 _pending_redownloads = {}
@@ -154,6 +158,89 @@ def _confirm_cancel_markup(confirm_data):
     return markup
 
 
+def _maintenance_markup():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton('🙈 Silent Start', callback_data='mw_start_silent'),
+        InlineKeyboardButton('📢 Regular Start', callback_data='mw_start_regular'),
+    )
+    markup.add(
+        InlineKeyboardButton('🔁 Reboot 5m', callback_data='mw_reboot_default'),
+        InlineKeyboardButton('💾 Firmware 5m', callback_data='mw_firmware_default'),
+    )
+    markup.add(
+        InlineKeyboardButton('⏹ Silent Stop', callback_data='mw_stop_silent'),
+        InlineKeyboardButton('✅ Stop + Notify', callback_data='mw_stop_regular'),
+    )
+    markup.add(
+        InlineKeyboardButton('📋 Status', callback_data='mw_status'),
+        InlineKeyboardButton('✖ Close', callback_data='mw_close'),
+    )
+    return markup
+
+
+def _send_maintenance_menu(chat_id):
+    bot.send_message(
+        chat_id,
+        '🔧 <b>Maintenance</b>\n'
+        'Quick actions for the common MW flows.\n\n'
+        '- Silent and regular starts stay open until you stop them\n'
+        '- Reboot and firmware auto-stop after 5m\n'
+        '- Custom timers still work: /start_silent 30m or /generic_mw 2h',
+        parse_mode='HTML',
+        reply_markup=_maintenance_markup(),
+    )
+
+
+def _selected_duration(duration, default_duration=None):
+    if duration is not None:
+        return duration
+    return default_duration
+
+
+def _start_silent_mw(duration=None, default_duration=None, reason='Silent maintenance window'):
+    selected_duration = _selected_duration(duration, default_duration)
+    result = start_mw()
+    if result == 'MW has been started' and selected_duration is not None:
+        replace_mw_state(bot, build_mw_state(selected_duration, reason=reason))
+        return f'{result}. Timed stop scheduled in {format_duration(selected_duration)}.'
+    return result
+
+
+def _start_notified_mw(notification_text, duration=None, default_duration=None, reason='Maintenance window'):
+    selected_duration = _selected_duration(duration, default_duration)
+    result = start_mw()
+    if result != 'MW has been started':
+        return result
+
+    notify_message = bot.send_message(chat_id=cfg.NOTIFY_CHAT_ID, text=notification_text)
+    status = result + '. Sev1 chat has been notified'
+    if selected_duration is None:
+        return status
+
+    state = build_mw_state(
+        selected_duration,
+        notify_chat_id=cfg.NOTIFY_CHAT_ID,
+        notify_message_id=notify_message.message_id,
+        reason=reason,
+    )
+    replace_mw_state(bot, state)
+    return f'{status}. Timed stop scheduled in {format_duration(selected_duration)}.'
+
+
+def _stop_silent_mw():
+    result, _success = stop_timed_mw(bot)
+    return result
+
+
+def _stop_notified_mw():
+    result, success = stop_timed_mw(bot)
+    if success:
+        bot.send_message(chat_id=cfg.NOTIFY_CHAT_ID, text='NAS: Server Status \nMaintenance window has been completed')
+        return result + '. Sev1 chat has been notified'
+    return result
+
+
 # ── /start ───────────────────────────────────────────────────────────
 
 @bot.message_handler(commands=['start'])
@@ -165,12 +252,12 @@ def command_start(message):
         InlineKeyboardButton('🎬 Redownload', callback_data='cmd_redownload'),
     )
     markup.add(
+        InlineKeyboardButton('🔧 Maintenance', callback_data='cmd_mw'),
         InlineKeyboardButton('📋 Commands', callback_data='cmd_help'),
-        InlineKeyboardButton('🔧 MW Status', callback_data='cmd_mw_status'),
     )
     bot.send_message(
         cid,
-        'Welcome to MWBot!',
+        'Welcome to MWBot! Pick an action.',
         reply_markup=markup,
     )
 
@@ -178,9 +265,10 @@ def command_start(message):
 # ── /help ────────────────────────────────────────────────────────────
 
 def _build_help_text():
-    lines = []
+    lines = ['<b>MWBot</b>']
     for section in HELP_SECTIONS:
-        lines.append(f"\n{section['icon']}  <b>{section['title']}</b>")
+        lines.append('')
+        lines.append(f"{section['icon']}  <b>{section['title']}</b>")
         for cmd, desc in section['commands'].items():
             lines.append(f'  /{cmd} — {desc}')
         if section.get('footer'):
@@ -195,6 +283,13 @@ def command_help(message):
         _build_help_text(),
         parse_mode='HTML',
     )
+
+
+@bot.message_handler(commands=['mw'])
+@safe_command
+@owner_only
+def command_mw_menu(message):
+    _send_maintenance_menu(message.chat.id)
 
 
 # ── /redownload ──────────────────────────────────────────────────────
@@ -239,33 +334,8 @@ def _start_redownload_flow(chat_id, user_id):
 
 # ── Maintenance Windows ──────────────────────────────────────────────
 
-def start_notified_mw(message, notification_text):
-    duration, error = parse_duration_argument(message)
-    if error is not None:
-        bot.reply_to(message, error)
-        return
-
-    bot.send_chat_action(message.chat.id, 'typing')
-    result = start_mw()
-    if result != 'MW has been started':
-        bot.reply_to(message, result)
-        return
-
-    status = result + '. Sev1 chat has been notified'
-    if duration is None:
-        bot.reply_to(message, status)
-        bot.send_message(chat_id=cfg.NOTIFY_CHAT_ID, text=notification_text)
-        return
-
-    notify_message = bot.send_message(chat_id=cfg.NOTIFY_CHAT_ID, text=notification_text)
-    state = build_mw_state(
-        duration,
-        notify_chat_id=cfg.NOTIFY_CHAT_ID,
-        notify_message_id=notify_message.message_id,
-        reason='Maintenance window',
-    )
-    replace_mw_state(bot, state)
-    bot.reply_to(message, f'{status}. Timed stop scheduled in {format_duration(duration)}.')
+def _parse_mw_duration(message):
+    return parse_duration_argument(message)
 
 
 @bot.message_handler(commands=['start_silent'])
@@ -277,10 +347,7 @@ def command_start_silent(message):
         bot.reply_to(message, error)
         return
     bot.send_chat_action(message.chat.id, 'typing')
-    result = start_mw()
-    if result == 'MW has been started' and duration is not None:
-        replace_mw_state(bot, build_mw_state(duration, reason='Silent maintenance window'))
-        result = f'{result}. Timed stop scheduled in {format_duration(duration)}.'
+    result = _start_silent_mw(duration=duration)
     bot.reply_to(message, result)
 
 @bot.message_handler(commands=['stop_silent'])
@@ -288,37 +355,64 @@ def command_start_silent(message):
 @owner_only
 def command_stop_silent(message):
     bot.send_chat_action(message.chat.id, 'typing')
-    result, _success = stop_timed_mw(bot)
+    result = _stop_silent_mw()
     bot.reply_to(message, result)
 
 @bot.message_handler(commands=['firmware_mw'])
 @safe_command
 @owner_only
 def command_firmware_mw(message):
-    start_notified_mw(message, 'NAS: Server Status \nFirmware update. \nETA - 15 minutes')
+    duration, error = _parse_mw_duration(message)
+    if error is not None:
+        bot.reply_to(message, error)
+        return
+    bot.send_chat_action(message.chat.id, 'typing')
+    result = _start_notified_mw(
+        'NAS: Server Status \nFirmware update. \nETA - 5 minutes',
+        duration=duration,
+        default_duration=DEFAULT_FIRMWARE_MW_DURATION,
+        reason='Firmware maintenance',
+    )
+    bot.reply_to(message, result)
 
 @bot.message_handler(commands=['reboot_mw'])
 @safe_command
 @owner_only
 def command_reboot_mw(message):
-    start_notified_mw(message, 'NAS: Server Status \nNAS is going to be rebooted. \nETA - 10 minutes')
+    duration, error = _parse_mw_duration(message)
+    if error is not None:
+        bot.reply_to(message, error)
+        return
+    bot.send_chat_action(message.chat.id, 'typing')
+    result = _start_notified_mw(
+        'NAS: Server Status \nNAS is going to be rebooted. \nETA - 5 minutes',
+        duration=duration,
+        default_duration=DEFAULT_REBOOT_MW_DURATION,
+        reason='Reboot maintenance',
+    )
+    bot.reply_to(message, result)
 
 @bot.message_handler(commands=['generic_mw'])
 @safe_command
 @owner_only
 def command_generic_mw(message):
-    start_notified_mw(message, 'NAS: Server Status \nMaintenance window has been started.  \nThis may take awhile')
+    duration, error = _parse_mw_duration(message)
+    if error is not None:
+        bot.reply_to(message, error)
+        return
+    bot.send_chat_action(message.chat.id, 'typing')
+    result = _start_notified_mw(
+        'NAS: Server Status \nMaintenance window has been started.  \nThis may take awhile',
+        duration=duration,
+    )
+    bot.reply_to(message, result)
 
 @bot.message_handler(commands=['stop_mw'])
 @safe_command
 @owner_only
 def command_stop_mw(message):
     bot.send_chat_action(message.chat.id, 'typing')
-    result, success = stop_timed_mw(bot)
-    if success:
-        bot.send_message(chat_id=cfg.NOTIFY_CHAT_ID, text='NAS: Server Status \nMaintenance window has been completed')
-        bot.reply_to(message, result + '. Sev1 chat has been notified')
-        return
+    result = _stop_notified_mw()
     bot.reply_to(message, result)
 
 
@@ -420,12 +514,58 @@ def handle_callback(call):
         bot.send_message(chat_id, _build_help_text(), parse_mode='HTML')
         return
 
-    if data == 'cmd_mw_status':
+    if data == 'cmd_mw':
         bot.answer_callback_query(call.id)
         if user_id != cfg.OWNER:
             bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
             return
-        bot.send_message(chat_id, get_mw_status_text())
+        _send_maintenance_menu(chat_id)
+        return
+
+    if data == 'mw_close':
+        bot.answer_callback_query(call.id, text='Closed')
+        bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
+        return
+
+    if data.startswith('mw_'):
+        bot.answer_callback_query(call.id)
+        if user_id != cfg.OWNER:
+            bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
+            return
+
+        bot.send_chat_action(chat_id, 'typing')
+        if data == 'mw_start_silent':
+            bot.send_message(chat_id, _start_silent_mw())
+            return
+        if data == 'mw_start_regular':
+            bot.send_message(chat_id, _start_notified_mw(
+                'NAS: Server Status \nMaintenance window has been started.  \nThis may take awhile'
+            ))
+            return
+        if data == 'mw_reboot_default':
+            bot.send_message(chat_id, _start_notified_mw(
+                'NAS: Server Status \nNAS is going to be rebooted. \nETA - 5 minutes',
+                default_duration=DEFAULT_REBOOT_MW_DURATION,
+                reason='Reboot maintenance',
+            ))
+            return
+        if data == 'mw_firmware_default':
+            bot.send_message(chat_id, _start_notified_mw(
+                'NAS: Server Status \nFirmware update. \nETA - 5 minutes',
+                default_duration=DEFAULT_FIRMWARE_MW_DURATION,
+                reason='Firmware maintenance',
+            ))
+            return
+        if data == 'mw_stop_silent':
+            bot.send_message(chat_id, _stop_silent_mw())
+            return
+        if data == 'mw_stop_regular':
+            bot.send_message(chat_id, _stop_notified_mw())
+            return
+        if data == 'mw_status':
+            bot.send_message(chat_id, get_mw_status_text())
+            return
+
         return
 
     # Redownload: user picked an issue from the list

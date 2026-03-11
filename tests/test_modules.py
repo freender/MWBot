@@ -56,7 +56,7 @@ def load_modules_package(temp_dir):
     maintenance = importlib.import_module('modules.maintenance')
     redownload = importlib.import_module('modules.redownload')
     firewall = importlib.import_module('modules.firewall')
-    maintenance.STATE_FILE = os.path.join(temp_dir, 'mw_state.json')
+    setattr(maintenance, 'STATE_FILE', os.path.join(temp_dir, 'mw_state.json'))
     return cfg, modules, maintenance, redownload, firewall
 
 
@@ -92,6 +92,15 @@ class ModulesTest(unittest.TestCase):
         duration, error = self.modules.parse_duration('bad')
         self.assertIsNone(duration)
         self.assertIn('Invalid duration', error)
+
+    def test_command_metadata_includes_maintenance_menu_and_short_defaults(self):
+        self.assertIn('mw', self.modules.COMMANDS)
+        self.assertIn('default 5m', self.modules.COMMANDS['firmware_mw'])
+        self.assertIn('default 5m', self.modules.COMMANDS['reboot_mw'])
+
+        maintenance_section = next(section for section in self.modules.HELP_SECTIONS if section['title'] == 'Maintenance')
+        self.assertEqual(maintenance_section['commands']['mw'], 'Open the maintenance quick-action menu')
+        self.assertIn('/mw', maintenance_section['footer'])
 
     def test_parse_seerr_issue_url(self):
         issue_id, error = self.modules.parse_seerr_issue_url('https://seerr.example.com/issues/29')
