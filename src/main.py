@@ -131,12 +131,22 @@ def _pending_key(chat_id, user_id):
 
 
 def _get_seerr_browser_url():
-    base_url = cfg.SEERR_BASE_URL.strip().rstrip('/')
+    configured_url = (cfg.SEERR_PUBLIC_URL or cfg.SEERR_BASE_URL).strip().rstrip('/')
+    if not configured_url:
+        return None
+
+    base_url = configured_url
     parsed = urlparse(base_url)
 
     if parsed.netloc:
+        hostname = parsed.hostname or ''
+        if '.' not in hostname or hostname in ('localhost', '127.0.0.1'):
+            return None
         return urlunparse(('https', parsed.netloc, parsed.path.rstrip('/'), '', '', ''))
 
+    hostname = base_url.lstrip('/').split('/', 1)[0].split(':', 1)[0]
+    if '.' not in hostname or hostname in ('localhost', '127.0.0.1'):
+        return None
     return f"https://{base_url.lstrip('/')}"
 
 
@@ -159,15 +169,18 @@ def _confirm_cancel_markup(confirm_data, confirm_label='Confirm'):
 
 def _show_menu(chat_id, text, reply_markup, message_id=None):
     if message_id is not None:
-        bot.edit_message_text(
-            text,
-            chat_id=chat_id,
-            message_id=message_id,
-            parse_mode='HTML',
-            disable_web_page_preview=True,
-            reply_markup=reply_markup,
-        )
-        return
+        try:
+            bot.edit_message_text(
+                text,
+                chat_id=chat_id,
+                message_id=message_id,
+                parse_mode='HTML',
+                disable_web_page_preview=True,
+                reply_markup=reply_markup,
+            )
+            return
+        except Exception as exc:
+            logging.warning('Unable to update menu message %s in chat %s: %s', message_id, chat_id, exc)
 
     bot.send_message(
         chat_id,
@@ -202,7 +215,9 @@ def _plex_markup():
 def _media_markup():
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(InlineKeyboardButton('📋 Pick Open Issue', callback_data='media_redownload'))
-    markup.add(InlineKeyboardButton('🌐 Open Overseerr', url=_get_seerr_browser_url()))
+    seerr_browser_url = _get_seerr_browser_url()
+    if seerr_browser_url:
+        markup.add(InlineKeyboardButton('🌐 Open Overseerr', url=seerr_browser_url))
     markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_home'))
     return markup
 
@@ -379,6 +394,7 @@ def command_redownload(message):
 
 def _start_redownload_flow(chat_id, user_id):
     bot.send_chat_action(chat_id, 'typing')
+    seerr_browser_url = _get_seerr_browser_url()
     try:
         open_issues = get_open_seerr_issues()
     except Exception as exc:
@@ -391,7 +407,8 @@ def _start_redownload_flow(chat_id, user_id):
             issue_id = issue.get('id')
             label = build_issue_label(issue)
             markup.add(InlineKeyboardButton(label, callback_data=f'redownload_issue:{issue_id}'))
-        markup.add(InlineKeyboardButton('Open Overseerr', url=_get_seerr_browser_url()))
+        if seerr_browser_url:
+            markup.add(InlineKeyboardButton('Open Overseerr', url=seerr_browser_url))
         markup.add(InlineKeyboardButton('Cancel', callback_data='cancel'))
         bot.send_message(
             chat_id,
@@ -400,7 +417,9 @@ def _start_redownload_flow(chat_id, user_id):
         )
     else:
         markup = InlineKeyboardMarkup(row_width=1)
-        markup.add(InlineKeyboardButton('Open Overseerr', url=_get_seerr_browser_url()))
+        if seerr_browser_url:
+            markup.add(InlineKeyboardButton('Open Overseerr', url=seerr_browser_url))
+        markup.add(InlineKeyboardButton('Cancel', callback_data='cancel'))
         bot.send_message(
             chat_id,
             'No open redownload issues right now.\nCreate a new issue in Overseerr, then come back here.',
