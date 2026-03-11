@@ -3,6 +3,7 @@ import cfg
 import logging
 import threading
 from functools import wraps
+from urllib.parse import urlparse
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from modules import (
@@ -127,6 +128,15 @@ def _pending_key(chat_id, user_id):
     return f'{chat_id}:{user_id}'
 
 
+def _get_seerr_browser_url():
+    parsed = urlparse(cfg.SEERR_BASE_URL)
+    if parsed.scheme == 'https' and parsed.netloc:
+        return cfg.SEERR_BASE_URL
+    if parsed.netloc == 'overseerr.freender.net':
+        return f'https://{parsed.netloc}'
+    return 'https://overseerr.freender.net'
+
+
 # ── Inline Keyboard Helpers ──────────────────────────────────────────
 
 def _cancel_markup():
@@ -210,7 +220,7 @@ def _start_redownload_flow(chat_id, user_id):
             issue_id = issue.get('id')
             label = build_issue_label(issue)
             markup.add(InlineKeyboardButton(label, callback_data=f'redownload_issue:{issue_id}'))
-        markup.add(InlineKeyboardButton('Open Overseerr', url=cfg.SEERR_BASE_URL))
+        markup.add(InlineKeyboardButton('Open Overseerr', url=_get_seerr_browser_url()))
         markup.add(InlineKeyboardButton('Cancel', callback_data='cancel'))
         bot.send_message(
             chat_id,
@@ -219,7 +229,7 @@ def _start_redownload_flow(chat_id, user_id):
         )
     else:
         markup = InlineKeyboardMarkup(row_width=1)
-        markup.add(InlineKeyboardButton('Open Overseerr', url=cfg.SEERR_BASE_URL))
+        markup.add(InlineKeyboardButton('Open Overseerr', url=_get_seerr_browser_url()))
         bot.send_message(
             chat_id,
             'No open redownload issues right now.\nCreate a new issue in Overseerr, then come back here.',
