@@ -1,7 +1,7 @@
 import logging
 
 import cfg
-from telebot.types import BotCommand
+from telebot.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 from modules.common import build_api_headers, normalize_base_url, request_json
 from modules.firewall import (
     add_asn_to_firewall_rule,
@@ -59,14 +59,25 @@ from modules.redownload import (
 )
 
 
-COMMANDS = {
+DEFAULT_COMMANDS = {
     'start': 'Open main menu',
-    'ip': 'Allow Plex in unknown place',
-    'reset_ip': 'Disable Plex in unknown place',
-    'redownload': 'Blacklist issue release and prevent re-download',
-    'mw': 'Open maintenance quick actions',
     'help': 'Show help',
 }
+
+AUTH_COMMANDS = {
+    'start': 'Open main menu',
+    'ip': 'Allow Plex in unknown place',
+    'redownload': 'Blacklist issue release and prevent re-download',
+    'help': 'Show help',
+}
+
+OWNER_COMMANDS = {
+    **AUTH_COMMANDS,
+    'reset_ip': 'Disable Plex in unknown place',
+    'mw': 'Open maintenance quick actions',
+}
+
+COMMANDS = OWNER_COMMANDS
 
 SEERR_OWNER_USER_ID = 1
 
@@ -195,11 +206,31 @@ def warm_seerr_access_cache():
     return cache
 
 
-def register_bot_commands(bot):
-    bot.set_my_commands([
-        BotCommand(name, description)
-        for name, description in COMMANDS.items()
-    ])
+def _build_bot_commands(command_map):
+    return [BotCommand(name, description) for name, description in command_map.items()]
+
+
+def register_bot_commands(bot, access_cache=None):
+    cache = access_cache or get_seerr_access_cache()
+    owner_chat_ids = set(cache.get('owner_chat_ids') or set())
+    authorized_chat_ids = set(cache.get('authorized_chat_ids') or set())
+
+    bot.set_my_commands(
+        _build_bot_commands(DEFAULT_COMMANDS),
+        scope=BotCommandScopeDefault(),
+    )
+
+    for chat_id in sorted(authorized_chat_ids - owner_chat_ids):
+        bot.set_my_commands(
+            _build_bot_commands(AUTH_COMMANDS),
+            scope=BotCommandScopeChat(chat_id),
+        )
+
+    for chat_id in sorted(owner_chat_ids):
+        bot.set_my_commands(
+            _build_bot_commands(OWNER_COMMANDS),
+            scope=BotCommandScopeChat(chat_id),
+        )
 
 
 def is_owner_chat_id(chat_id):

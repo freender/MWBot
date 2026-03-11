@@ -104,8 +104,45 @@ class ModulesTest(unittest.TestCase):
         self.assertEqual(self.modules.COMMANDS['start'], 'Open main menu')
         self.assertEqual(self.modules.COMMANDS['mw'], 'Open maintenance quick actions')
         self.assertEqual(self.modules.COMMANDS['help'], 'Show help')
+        self.assertNotIn('mw', self.modules.AUTH_COMMANDS)
+        self.assertNotIn('reset_ip', self.modules.AUTH_COMMANDS)
+        self.assertEqual(set(self.modules.DEFAULT_COMMANDS), {'start', 'help'})
         self.assertNotIn('firmware_mw', self.modules.COMMANDS)
         self.assertNotIn('reboot_mw', self.modules.COMMANDS)
+
+    def test_register_bot_commands_uses_default_auth_and_owner_scopes(self):
+        bot = mock.Mock()
+        access_cache = {
+            'authorized_chat_ids': {2, 3},
+            'owner_chat_ids': {3},
+        }
+
+        self.modules.register_bot_commands(bot, access_cache=access_cache)
+
+        self.assertEqual(bot.set_my_commands.call_count, 3)
+
+        default_call = bot.set_my_commands.call_args_list[0]
+        self.assertEqual(
+            [command.command for command in default_call.args[0]],
+            ['start', 'help'],
+        )
+        self.assertEqual(default_call.kwargs['scope'].type, 'default')
+
+        auth_call = bot.set_my_commands.call_args_list[1]
+        self.assertEqual(
+            [command.command for command in auth_call.args[0]],
+            ['start', 'ip', 'redownload', 'help'],
+        )
+        self.assertEqual(auth_call.kwargs['scope'].type, 'chat')
+        self.assertEqual(auth_call.kwargs['scope'].chat_id, 2)
+
+        owner_call = bot.set_my_commands.call_args_list[2]
+        self.assertEqual(
+            [command.command for command in owner_call.args[0]],
+            ['start', 'ip', 'redownload', 'help', 'reset_ip', 'mw'],
+        )
+        self.assertEqual(owner_call.kwargs['scope'].type, 'chat')
+        self.assertEqual(owner_call.kwargs['scope'].chat_id, 3)
 
     def test_parse_seerr_issue_url(self):
         issue_id, error = self.modules.parse_seerr_issue_url('https://seerr.example.com/issues/29')
