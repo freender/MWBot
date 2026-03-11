@@ -4,6 +4,7 @@ import logging
 import threading
 from datetime import timedelta
 from functools import wraps
+from html import escape
 from urllib.parse import urlparse, urlunparse
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
@@ -18,8 +19,10 @@ from modules import (
     get_asn_from_ip,
     get_mw_status_text,
     get_open_seerr_issues,
+    is_auth_chat_id,
     is_auth_user,
     is_command,
+    is_owner_chat_id,
     is_owner,
     is_valid_ip,
     maintain_timed_mw,
@@ -29,6 +32,7 @@ from modules import (
     schedule_fw_task,
     start_mw,
     stop_timed_mw,
+    warm_seerr_access_cache,
 )
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
@@ -60,7 +64,13 @@ def is_same_chat_user(message, expected_chat_id, expected_user_id):
 
 
 def _set_flow(chat_id, flow_name):
-    _active_flows[chat_id] = flow_name
+    _active_flows[chat_id] = {'name': flow_name, 'message_id': None}
+
+
+def _set_flow_message(chat_id, message_id):
+    flow = _active_flows.get(chat_id)
+    if flow is not None:
+        flow['message_id'] = message_id
 
 
 def _clear_flow(chat_id):
@@ -68,7 +78,13 @@ def _clear_flow(chat_id):
 
 
 def _check_flow(chat_id, expected_flow):
-    return _active_flows.get(chat_id) == expected_flow
+    flow = _active_flows.get(chat_id) or {}
+    return flow.get('name') == expected_flow
+
+
+def _get_flow_message_id(chat_id):
+    flow = _active_flows.get(chat_id) or {}
+    return flow.get('message_id')
 
 
 def register_owned_next_step(sent_message, handler, expected_chat_id, expected_user_id, *handler_args):
@@ -77,7 +93,7 @@ def register_owned_next_step(sent_message, handler, expected_chat_id, expected_u
             return
         handler(next_message, *handler_args)
 
-    bot.register_next_step_handler(sent_message, wrapped)
+    bot.register_next_step_handler_by_chat_id(expected_chat_id, wrapped)
 
 
 def owner_only(handler):
@@ -152,17 +168,17 @@ def _get_seerr_browser_url():
 
 # ── Inline Keyboard Helpers ──────────────────────────────────────────
 
-def _cancel_markup():
+def _cancel_markup(cancel_callback='cancel', cancel_label='Cancel'):
     markup = InlineKeyboardMarkup()
-    markup.add(InlineKeyboardButton('Cancel', callback_data='cancel'))
+    markup.add(InlineKeyboardButton(cancel_label, callback_data=cancel_callback))
     return markup
 
 
-def _confirm_cancel_markup(confirm_data, confirm_label='Confirm'):
+def _confirm_cancel_markup(confirm_data, confirm_label='Confirm', cancel_callback='cancel', cancel_label='Cancel'):
     markup = InlineKeyboardMarkup(row_width=2)
     markup.add(
         InlineKeyboardButton(confirm_label, callback_data=confirm_data),
-        InlineKeyboardButton('Cancel', callback_data='cancel'),
+        InlineKeyboardButton(cancel_label, callback_data=cancel_callback),
     )
     return markup
 
@@ -243,11 +259,53 @@ def _maintenance_markup():
     return markup
 
 
-def _show_home_menu(chat_id, message_id=None):
+def _plex_result_markup():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton('✅ Allow Plex', callback_data='plex_allow'),
+        InlineKeyboardButton('🧹 Remove Access', callback_data='plex_reset'),
+    )
+    markup.add(
+        InlineKeyboardButton('⬅ Back', callback_data='nav_plex'),
+        InlineKeyboardButton('🏠 Home', callback_data='nav_home'),
+    )
+    return markup
+
+
+def _media_result_markup():
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton('📋 Pick Open Issue', callback_data='media_redownload'))
+    seerr_browser_url = _get_seerr_browser_url()
+    if seerr_browser_url:
+        markup.add(InlineKeyboardButton('🌐 Open Overseerr', url=seerr_browser_url))
+    markup.add(
+        InlineKeyboardButton('⬅ Back', callback_data='nav_media'),
+        InlineKeyboardButton('🏠 Home', callback_data='nav_home'),
+    )
+    return markup
+
+
+def _maintenance_result_markup():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton('📋 Status', callback_data='mw_status'),
+        InlineKeyboardButton('⬅ Back', callback_data='nav_mw'),
+    )
+    markup.add(InlineKeyboardButton('🏠 Home', callback_data='nav_home'))
+    return markup
+
+
+def _show_home_menu(chat_id, user_id=None, message_id=None):
+    display_user_id = user_id if user_id is not None else chat_id
+    text = (
+        '🤖 <b>MWBot</b>\n\n'
+        f'<b>Your Telegram ID:</b> <code>{display_user_id}</code>\n'
+        'Paste this into Seerr -> Notifications -> Telegram Chat ID.\n\n'
+        '<b>Choose a section</b> to manage Plex, redownloads, or maintenance windows.'
+    )
     _show_menu(
         chat_id,
-        '🤖 <b>MWBot</b>\n'
-        'Choose a section to manage Plex, redownloads, or maintenance windows.',
+        text,
         _home_markup(),
         message_id=message_id,
     )
@@ -282,6 +340,33 @@ def _show_maintenance_menu(chat_id, message_id=None):
         '- Reboot and firmware auto-stop after 5m\n'
         '- Custom timers still work: /start_silent 30m or /generic_mw 2h',
         _maintenance_markup(),
+        message_id=message_id,
+    )
+
+
+def _show_plex_result(chat_id, text, message_id=None):
+    _show_menu(
+        chat_id,
+        '📡 <b>Plex Access</b>\n' + escape(text),
+        _plex_result_markup(),
+        message_id=message_id,
+    )
+
+
+def _show_media_result(chat_id, text, message_id=None):
+    _show_menu(
+        chat_id,
+        '🎬 <b>Redownload</b>\n' + escape(text),
+        _media_result_markup(),
+        message_id=message_id,
+    )
+
+
+def _show_maintenance_result(chat_id, text, message_id=None):
+    _show_menu(
+        chat_id,
+        '🔧 <b>Maintenance</b>\n' + escape(text),
+        _maintenance_result_markup(),
         message_id=message_id,
     )
 
@@ -339,7 +424,7 @@ def _stop_notified_mw():
 
 @bot.message_handler(commands=['start'])
 def command_start(message):
-    _show_home_menu(message.chat.id)
+    _show_home_menu(message.chat.id, user_id=_get_user_id(message))
 
 
 # ── /help ────────────────────────────────────────────────────────────
@@ -392,7 +477,7 @@ def command_redownload(message):
     _start_redownload_flow(message.chat.id, _get_user_id(message))
 
 
-def _start_redownload_flow(chat_id, user_id):
+def _start_redownload_flow(chat_id, user_id, message_id=None):
     bot.send_chat_action(chat_id, 'typing')
     seerr_browser_url = _get_seerr_browser_url()
     try:
@@ -409,22 +494,43 @@ def _start_redownload_flow(chat_id, user_id):
             markup.add(InlineKeyboardButton(label, callback_data=f'redownload_issue:{issue_id}'))
         if seerr_browser_url:
             markup.add(InlineKeyboardButton('Open Overseerr', url=seerr_browser_url))
-        markup.add(InlineKeyboardButton('Cancel', callback_data='cancel'))
-        bot.send_message(
-            chat_id,
-            'Pick the title with the bad release.\nIf it is not listed, create a new issue in Overseerr first.',
-            reply_markup=markup,
-        )
+        if message_id is not None:
+            markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_media'))
+            _show_menu(
+                chat_id,
+                '🎬 <b>Pick Open Issue</b>\n'
+                'Choose the title with the bad release.\n'
+                'If it is not listed, open Overseerr first and create a new issue.',
+                markup,
+                message_id=message_id,
+            )
+        else:
+            markup.add(InlineKeyboardButton('Cancel', callback_data='cancel'))
+            bot.send_message(
+                chat_id,
+                'Pick the title with the bad release.\nIf it is not listed, create a new issue in Overseerr first.',
+                reply_markup=markup,
+            )
     else:
         markup = InlineKeyboardMarkup(row_width=1)
         if seerr_browser_url:
             markup.add(InlineKeyboardButton('Open Overseerr', url=seerr_browser_url))
-        markup.add(InlineKeyboardButton('Cancel', callback_data='cancel'))
-        bot.send_message(
-            chat_id,
-            'No open redownload issues right now.\nCreate a new issue in Overseerr, then come back here.',
-            reply_markup=markup,
-        )
+        if message_id is not None:
+            markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_media'))
+            _show_menu(
+                chat_id,
+                '🎬 <b>No Open Issues</b>\n'
+                'Create a new issue in Overseerr, then come back here.',
+                markup,
+                message_id=message_id,
+            )
+        else:
+            markup.add(InlineKeyboardButton('Cancel', callback_data='cancel'))
+            bot.send_message(
+                chat_id,
+                'No open redownload issues right now.\nCreate a new issue in Overseerr, then come back here.',
+                reply_markup=markup,
+            )
 
 
 # ── Maintenance Windows ──────────────────────────────────────────────
@@ -525,17 +631,31 @@ def command_allow_cdn(message):
     _start_ip_flow(message.chat.id, _get_user_id(message))
 
 
-def _start_ip_flow(chat_id, user_id):
+def _start_ip_flow(chat_id, user_id, message_id=None):
     _set_flow(chat_id, 'ip')
     bot.send_chat_action(chat_id, 'typing')
-    sent = bot.send_message(
-        chat_id,
-        '📡 <b>Send your IPv4 address</b>\n\n'
-        'Visit <a href="https://ipinfo.io/ip">ipinfo.io/ip</a> and paste the IP here.',
-        parse_mode='HTML',
-        disable_web_page_preview=True,
-        reply_markup=_cancel_markup(),
+    prompt_text = (
+        '📡 <b>Allow Plex</b>\n'
+        'Send your current IPv4 address.\n\n'
+        'Visit <a href="https://ipinfo.io/ip">ipinfo.io/ip</a> and paste it here.'
     )
+    if message_id is not None:
+        _set_flow_message(chat_id, message_id)
+        _show_menu(
+            chat_id,
+            prompt_text,
+            _cancel_markup(cancel_callback='nav_plex', cancel_label='⬅ Back'),
+            message_id=message_id,
+        )
+        sent = None
+    else:
+        sent = bot.send_message(
+            chat_id,
+            prompt_text,
+            parse_mode='HTML',
+            disable_web_page_preview=True,
+            reply_markup=_cancel_markup(),
+        )
     register_owned_next_step(sent, ip, chat_id, user_id)
 
 
@@ -550,19 +670,31 @@ def command_reset_cdn(message):
 def ip(message):
     if not _check_flow(message.chat.id, 'ip'):
         return
+    flow_message_id = _get_flow_message_id(message.chat.id)
     _clear_flow(message.chat.id)
 
     ip_address = message.text
     if not is_valid_ip(ip_address):
-        bot.send_message(message.chat.id, '❌ Invalid IP address format!\nDouble-check and rerun /ip')
+        if flow_message_id is not None:
+            _show_plex_result(message.chat.id, 'Invalid IP address format. Double-check it and try again.', message_id=flow_message_id)
+        else:
+            bot.send_message(message.chat.id, '❌ Invalid IP address format!\nDouble-check and rerun /ip')
     else:
         bot.send_chat_action(message.chat.id, 'typing')
         asn, error = get_asn_from_ip(ip_address)
         if asn is None:
-            bot.send_message(message.chat.id, text=error or 'Unable to resolve ASN for this IP.')
+            result_text = error or 'Unable to resolve ASN for this IP.'
+            if flow_message_id is not None:
+                _show_plex_result(message.chat.id, result_text, message_id=flow_message_id)
+            else:
+                bot.send_message(message.chat.id, text=result_text)
         else:
             result = add_asn_to_firewall_rule(asn)
-            bot.send_message(message.chat.id, text=result or 'Unable to update firewall rule.')
+            result_text = result or 'Unable to update firewall rule.'
+            if flow_message_id is not None:
+                _show_plex_result(message.chat.id, result_text, message_id=flow_message_id)
+            else:
+                bot.send_message(message.chat.id, text=result_text)
 
 
 # ── Callback Queries (inline button presses) ────────────────────────
@@ -594,12 +726,12 @@ def handle_callback(call):
 
     if data == 'nav_home':
         bot.answer_callback_query(call.id)
-        _show_home_menu(chat_id, message_id=call.message.message_id)
+        _show_home_menu(chat_id, user_id=user_id, message_id=call.message.message_id)
         return
 
     if data == 'nav_plex':
         bot.answer_callback_query(call.id)
-        if str(user_id) not in cfg.TELEGRAM_AUTH_USERS:
+        if not is_auth_chat_id(user_id):
             bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
             return
         _show_plex_menu(chat_id, message_id=call.message.message_id)
@@ -607,7 +739,7 @@ def handle_callback(call):
 
     if data == 'nav_media':
         bot.answer_callback_query(call.id)
-        if str(user_id) not in cfg.TELEGRAM_AUTH_USERS:
+        if not is_auth_chat_id(user_id):
             bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
             return
         _show_media_menu(chat_id, message_id=call.message.message_id)
@@ -615,7 +747,7 @@ def handle_callback(call):
 
     if data in ('nav_mw', 'cmd_mw'):
         bot.answer_callback_query(call.id)
-        if user_id != cfg.OWNER:
+        if not is_owner_chat_id(user_id):
             bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
             return
         _show_maintenance_menu(chat_id, message_id=call.message.message_id)
@@ -623,28 +755,28 @@ def handle_callback(call):
 
     if data in ('plex_allow', 'cmd_ip'):
         bot.answer_callback_query(call.id)
-        if str(user_id) not in cfg.TELEGRAM_AUTH_USERS:
+        if not is_auth_chat_id(user_id):
             bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
             return
-        _start_ip_flow(chat_id, user_id)
+        _start_ip_flow(chat_id, user_id, message_id=call.message.message_id)
         return
 
     if data == 'plex_reset':
         bot.answer_callback_query(call.id)
-        if user_id != cfg.OWNER:
+        if not is_owner_chat_id(user_id):
             bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
             return
         bot.send_chat_action(chat_id, 'typing')
         result = disable_asn_to_firewall_rule()
-        bot.send_message(chat_id, text=result or 'Unable to update firewall rule.')
+        _show_plex_result(chat_id, result or 'Unable to update firewall rule.', message_id=call.message.message_id)
         return
 
     if data in ('media_redownload', 'cmd_redownload'):
         bot.answer_callback_query(call.id)
-        if str(user_id) not in cfg.TELEGRAM_AUTH_USERS:
+        if not is_auth_chat_id(user_id):
             bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
             return
-        _start_redownload_flow(chat_id, user_id)
+        _start_redownload_flow(chat_id, user_id, message_id=call.message.message_id)
         return
 
     if data == 'cmd_help':
@@ -654,66 +786,77 @@ def handle_callback(call):
 
     if data.startswith('mw_'):
         bot.answer_callback_query(call.id)
-        if user_id != cfg.OWNER:
+        if not is_owner_chat_id(user_id):
             bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
             return
 
         bot.send_chat_action(chat_id, 'typing')
         if data == 'mw_start_silent':
-            bot.send_message(chat_id, _start_silent_mw())
+            _show_maintenance_result(chat_id, _start_silent_mw(), message_id=call.message.message_id)
             return
         if data == 'mw_start_regular':
-            bot.send_message(chat_id, _start_notified_mw(
+            _show_maintenance_result(chat_id, _start_notified_mw(
                 'NAS: Server Status \nMaintenance window has been started.  \nThis may take awhile'
-            ))
+            ), message_id=call.message.message_id)
             return
         if data == 'mw_reboot_default':
-            bot.send_message(chat_id, _start_notified_mw(
+            _show_maintenance_result(chat_id, _start_notified_mw(
                 'NAS: Server Status \nNAS is going to be rebooted. \nETA - 5 minutes',
                 default_duration=DEFAULT_REBOOT_MW_DURATION,
                 reason='Reboot maintenance',
-            ))
+            ), message_id=call.message.message_id)
             return
         if data == 'mw_firmware_default':
-            bot.send_message(chat_id, _start_notified_mw(
+            _show_maintenance_result(chat_id, _start_notified_mw(
                 'NAS: Server Status \nFirmware update. \nETA - 5 minutes',
                 default_duration=DEFAULT_FIRMWARE_MW_DURATION,
                 reason='Firmware maintenance',
-            ))
+            ), message_id=call.message.message_id)
             return
         if data == 'mw_stop_silent':
-            bot.send_message(chat_id, _stop_silent_mw())
+            _show_maintenance_result(chat_id, _stop_silent_mw(), message_id=call.message.message_id)
             return
         if data == 'mw_stop_regular':
-            bot.send_message(chat_id, _stop_notified_mw())
+            _show_maintenance_result(chat_id, _stop_notified_mw(), message_id=call.message.message_id)
             return
         if data == 'mw_status':
-            bot.send_message(chat_id, get_mw_status_text())
+            _show_maintenance_result(chat_id, get_mw_status_text(), message_id=call.message.message_id)
             return
 
         return
 
     # Redownload: user picked an issue from the list
     if data.startswith('redownload_issue:'):
-        if str(user_id) not in cfg.TELEGRAM_AUTH_USERS:
+        if not is_auth_chat_id(user_id):
             bot.answer_callback_query(call.id, text='Not authorized')
             return
         issue_id_str = data.split(':', 1)[1]
         bot.answer_callback_query(call.id)
-        bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
         bot.send_chat_action(chat_id, 'typing')
         seerr_url = f'{cfg.SEERR_BASE_URL}/issues/{issue_id_str}'
         target, error = resolve_redownload_issue(seerr_url)
         if target is None:
-            bot.send_message(chat_id, error or 'Unable to resolve Seerr issue.')
+            _show_menu(
+                chat_id,
+                f'🎬 <b>Pick Open Issue</b>\n{error or "Unable to resolve Seerr issue."}',
+                _cancel_markup(cancel_callback='media_redownload', cancel_label='⬅ Back'),
+                message_id=call.message.message_id,
+            )
             return
         key = _pending_key(chat_id, user_id)
         _pending_redownloads[key] = target
         confirm_label = 'Continue Anyway' if target.get('original_language_name') and target.get('original_language_name') != 'English' else 'Confirm'
-        bot.send_message(
-            chat_id,
+        bot.edit_message_text(
             build_redownload_confirmation(target),
-            reply_markup=_confirm_cancel_markup('redownload_confirm', confirm_label=confirm_label),
+            chat_id=chat_id,
+            message_id=call.message.message_id,
+            parse_mode='HTML',
+            reply_markup=_confirm_cancel_markup(
+                'redownload_confirm',
+                confirm_label=confirm_label,
+                cancel_callback='media_redownload',
+                cancel_label='⬅ Back',
+            ),
         )
         return
 
@@ -729,14 +872,11 @@ def handle_callback(call):
             build_redownload_confirmation(target) + '\n\n⏳ Processing...',
             chat_id=chat_id,
             message_id=call.message.message_id,
+            parse_mode='HTML',
         )
         bot.send_chat_action(chat_id, 'typing')
         result = execute_redownload(target)
-        bot.edit_message_text(
-            result or 'Redownload request completed.',
-            chat_id=chat_id,
-            message_id=call.message.message_id,
-        )
+        _show_media_result(chat_id, result or 'Redownload request completed.', message_id=call.message.message_id)
         return
 
     bot.answer_callback_query(call.id)
@@ -752,6 +892,7 @@ def command_unknown(message):
 
 
 def main():
+    warm_seerr_access_cache()
     start_background_threads(bot)
     bot.infinity_polling()
 

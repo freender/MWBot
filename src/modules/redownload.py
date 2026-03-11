@@ -1,5 +1,6 @@
 import logging
 import re
+from html import escape
 
 import requests
 
@@ -795,18 +796,19 @@ def build_redownload_confirmation(target):
     if original_language and original_language != 'English':
         media_name = 'movie' if target.get('media_type') == 'movie' else 'episode'
         warning = (
-            f'Warning: original language is {original_language}.\n'
-            f'This {media_name} may not be available in English at all. Continue only if you still want to replace it.\n\n'
+            f'<b>Warning:</b> original language is <b>{escape(original_language)}</b>.\n'
+            f'This {media_name} may not be available in English at all.\n'
+            '<b>Only continue if you still want to replace it.</b>\n\n'
         )
-    issue_line = f"Issue: #{target['issue_id']}\n" if target.get('issue_id') else ''
-    file_line = f"Current file: {target.get('file_path', 'Unknown')}\n"
+    issue_line = f"<b>Issue:</b> #{target['issue_id']}\n" if target.get('issue_id') else ''
+    file_path = escape(target.get('file_path', 'Unknown'))
     return (
         f'{warning}'
-        f"Ready to replace the current release for {target['label']}.\n"
+        f"<b>Ready to replace</b> {escape(target['label'])}.\n"
         f"{issue_line}"
-        f"{file_line}"
-        f'Service: {service}\n'
-        'Actions: blocklist release, delete current file, search fresh release.'
+        f'<b>Current file:</b> <code>{file_path}</code>\n'
+        f'<b>Service:</b> {escape(service)}\n'
+        '<b>Actions:</b> blocklist release, delete current file, search fresh release.'
     )
 
 

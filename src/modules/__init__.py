@@ -1,6 +1,7 @@
 import logging
 
 import cfg
+from modules.common import build_api_headers, normalize_base_url, request_json
 from modules.firewall import (
     add_asn_to_firewall_rule,
     convert_to_local_time,
@@ -107,6 +108,14 @@ HELP_SECTIONS = [
     },
 ]
 
+SEERR_OWNER_USER_ID = 1
+
+_seerr_access_cache = {
+    'authorized_chat_ids': set(),
+    'owner_chat_ids': set(),
+    'loaded': False,
+}
+
 
 def is_command(string):
     if not string:
@@ -114,11 +123,133 @@ def is_command(string):
     return string.startswith('/')
 
 
+def _coerce_chat_id(value):
+    if value in (None, ''):
+        return None
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _get_env_authorized_chat_ids():
+    return {
+        chat_id for chat_id in (_coerce_chat_id(value) for value in cfg.TELEGRAM_AUTH_USERS)
+        if chat_id is not None
+    }
+
+
+def _get_env_owner_chat_ids():
+    owner_chat_id = _coerce_chat_id(cfg.OWNER)
+    if owner_chat_id is None:
+        return set()
+    return {owner_chat_id}
+
+
+def _get_message_telegram_id(message):
+    from_user = getattr(message, 'from_user', None)
+    from_user_id = getattr(from_user, 'id', None)
+    if from_user_id is not None:
+        return from_user_id
+
+    chat = getattr(message, 'chat', None)
+    return getattr(chat, 'id', None)
+
+
+def _get_seerr_users():
+    users = []
+    skip = 0
+    take = 100
+    base_url = normalize_base_url(cfg.SEERR_BASE_URL)
+
+    while True:
+        payload = request_json(
+            'GET',
+            f'{base_url}/api/v1/user',
+            headers=build_api_headers(cfg.SEERR_API_KEY),
+            params={'take': take, 'skip': skip},
+        ) or {}
+        results = payload.get('results') or []
+        users.extend(results)
+        if len(results) < take:
+            return users
+        skip += take
+
+
+def _get_seerr_notification_settings(user_id):
+    base_url = normalize_base_url(cfg.SEERR_BASE_URL)
+    return request_json(
+        'GET',
+        f'{base_url}/api/v1/user/{user_id}/settings/notifications',
+        headers=build_api_headers(cfg.SEERR_API_KEY),
+    ) or {}
+
+
+def _refresh_seerr_access_cache():
+    authorized_chat_ids = set(_get_env_authorized_chat_ids())
+    owner_chat_ids = set(_get_env_owner_chat_ids())
+
+    users = _get_seerr_users()
+    for user in users:
+        user_id = user.get('id')
+        if user_id is None:
+            continue
+
+        settings = _get_seerr_notification_settings(user_id)
+        telegram_chat_id = _coerce_chat_id(settings.get('telegramChatId'))
+        if telegram_chat_id is None:
+            continue
+
+        authorized_chat_ids.add(telegram_chat_id)
+        if user_id == SEERR_OWNER_USER_ID:
+            owner_chat_ids.add(telegram_chat_id)
+
+    _seerr_access_cache.update({
+        'authorized_chat_ids': authorized_chat_ids,
+        'owner_chat_ids': owner_chat_ids,
+        'loaded': True,
+    })
+
+
+def get_seerr_access_cache():
+    return _seerr_access_cache
+
+
+def warm_seerr_access_cache():
+    try:
+        _refresh_seerr_access_cache()
+    except Exception as exc:
+        logging.warning('Unable to load Seerr Telegram access cache on startup: %s', exc)
+        _seerr_access_cache.update({
+            'authorized_chat_ids': set(_get_env_authorized_chat_ids()),
+            'owner_chat_ids': set(_get_env_owner_chat_ids()),
+            'loaded': True,
+        })
+
+    cache = get_seerr_access_cache()
+    logging.info(
+        'Seerr Telegram access cache ready: %s authorized, %s owners',
+        len(cache['authorized_chat_ids']),
+        len(cache['owner_chat_ids']),
+    )
+    return cache
+
+
+def is_owner_chat_id(chat_id):
+    return bool(chat_id in get_seerr_access_cache()['owner_chat_ids'])
+
+
+def is_auth_chat_id(chat_id):
+    return bool(chat_id in get_seerr_access_cache()['authorized_chat_ids'])
+
+
 def is_owner(message):
-    logging.warning('Auth attempt for CID: %s', message.chat.id)
-    return bool(message.chat.id == cfg.OWNER)
+    telegram_id = _get_message_telegram_id(message)
+    logging.warning('Owner auth attempt for Telegram ID: %s', telegram_id)
+    return is_owner_chat_id(telegram_id)
 
 
 def is_auth_user(message):
-    logging.warning('Auth attempt for CID: %s', message.chat.id)
-    return bool(str(message.chat.id) in cfg.TELEGRAM_AUTH_USERS)
+    telegram_id = _get_message_telegram_id(message)
+    logging.warning('User auth attempt for Telegram ID: %s', telegram_id)
+    return is_auth_chat_id(telegram_id)

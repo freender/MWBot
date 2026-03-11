@@ -76,6 +76,11 @@ class ModulesTest(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.cfg, self.modules, self.maintenance, self.redownload, self.firewall = load_modules_package(self.temp_dir.name)
+        self.modules._seerr_access_cache.update({
+            'authorized_chat_ids': set(),
+            'owner_chat_ids': set(),
+            'loaded': False,
+        })
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -419,8 +424,9 @@ class ModulesTest(unittest.TestCase):
     def test_build_redownload_confirmation(self):
         text = self.modules.build_redownload_confirmation({'media_type': 'movie', 'label': 'Movie title', 'issue_id': 29, 'file_path': '/movies/Movie title.mkv', 'service': 'Radarr'})
         self.assertIn('Movie title', text)
-        self.assertIn('Issue: #29', text)
-        self.assertIn('Current file: /movies/Movie title.mkv', text)
+        self.assertIn('<b>Ready to replace</b>', text)
+        self.assertIn('<b>Issue:</b> #29', text)
+        self.assertIn('<b>Current file:</b> <code>/movies/Movie title.mkv</code>', text)
         self.assertIn('delete current file', text)
 
     def test_build_redownload_confirmation_warns_for_non_english_original_language(self):
@@ -433,8 +439,59 @@ class ModulesTest(unittest.TestCase):
             'original_language_name': 'French',
         })
 
-        self.assertIn('Warning: original language is French.', text)
+        self.assertIn('<b>Warning:</b> original language is <b>French</b>.', text)
         self.assertIn('may not be available in English at all', text)
+        self.assertIn('Only continue if you still want to replace it.', text)
+
+    def test_is_auth_user_accepts_seerr_telegram_chat_id(self):
+        payload = {'results': [{'id': 1}, {'id': 3}], 'pageInfo': {'results': 2}}
+        settings = [
+            {'telegramChatId': '733172269'},
+            {'telegramChatId': '987654321'},
+        ]
+        message = mock.Mock(
+            chat=mock.Mock(id=999),
+            from_user=mock.Mock(id=987654321),
+        )
+
+        with mock.patch.object(self.modules, 'request_json', side_effect=[payload] + settings):
+            self.modules.warm_seerr_access_cache()
+
+        self.assertTrue(self.modules.is_auth_user(message))
+
+    def test_is_owner_uses_seerr_owner_telegram_chat_id(self):
+        payload = {'results': [{'id': 1}, {'id': 3}], 'pageInfo': {'results': 2}}
+        settings = [
+            {'telegramChatId': '733172269'},
+            {'telegramChatId': '987654321'},
+        ]
+        owner_message = mock.Mock(
+            chat=mock.Mock(id=100),
+            from_user=mock.Mock(id=733172269),
+        )
+        user_message = mock.Mock(
+            chat=mock.Mock(id=100),
+            from_user=mock.Mock(id=987654321),
+        )
+
+        with mock.patch.object(self.modules, 'request_json', side_effect=[payload] + settings):
+            self.modules.warm_seerr_access_cache()
+
+        self.assertTrue(self.modules.is_owner(owner_message))
+        self.assertFalse(self.modules.is_owner(user_message))
+
+    def test_warm_seerr_access_cache_falls_back_to_env(self):
+        payload = {'results': [{'id': 1}], 'pageInfo': {'results': 1}}
+        message = mock.Mock(
+            chat=mock.Mock(id=2),
+            from_user=mock.Mock(id=2),
+        )
+
+        with mock.patch.object(self.modules, 'request_json', side_effect=RuntimeError('boom')):
+            cache = self.modules.warm_seerr_access_cache()
+
+        self.assertTrue(cache['loaded'])
+        self.assertTrue(self.modules.is_auth_user(message))
 
     def test_mw_status_text(self):
         state = self.modules.build_mw_state(timedelta(minutes=45), reason='Firmware maintenance')
