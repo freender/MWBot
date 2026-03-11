@@ -97,6 +97,48 @@ def get_all_seerr_issue_ids():
         page += 1
 
 
+def get_open_seerr_issues():
+    issues = []
+    page = 1
+    take = 50
+
+    while True:
+        url = f"{normalize_base_url(cfg.SEERR_BASE_URL)}/api/v1/issue"
+        payload = request_json(
+            'GET',
+            url,
+            headers=build_api_headers(cfg.SEERR_API_KEY),
+            params={'filter': 'open', 'take': take, 'skip': (page - 1) * take, 'sort': 'modified'},
+        ) or {}
+        results = payload.get('results', [])
+        issues.extend(results)
+
+        page_info = payload.get('pageInfo') or {}
+        total_pages = page_info.get('pages') or 0
+        if page >= total_pages or not results:
+            return issues
+        page += 1
+
+
+def build_issue_label(issue):
+    subject = issue.get('subject') or ''
+    media = issue.get('media') or {}
+    media_type = media.get('mediaType') or ''
+
+    season = issue.get('problemSeason')
+    episode = issue.get('problemEpisode')
+    if media_type == 'tv' and season and episode:
+        ep_tag = f' S{season:02d}E{episode:02d}'
+    else:
+        ep_tag = ''
+
+    if subject:
+        return f'{subject}{ep_tag}'
+
+    icon = '\U0001f3ac' if media_type == 'movie' else '\U0001f4fa' if media_type == 'tv' else ''
+    return f'{icon} Issue #{issue.get("id", "?")}{ep_tag}'.strip()
+
+
 def issue_sort_key(issue):
     return (
         bool(issue.get('problemSeason') and issue.get('problemEpisode')),

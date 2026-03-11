@@ -351,6 +351,24 @@ class ModulesTest(unittest.TestCase):
 
         self.assertEqual(record['id'], 2)
 
+    def test_build_issue_label(self):
+        self.assertEqual(
+            self.modules.build_issue_label({'id': 5, 'subject': 'Bad Movie', 'media': {'mediaType': 'movie'}}),
+            'Bad Movie',
+        )
+        self.assertEqual(
+            self.modules.build_issue_label({'id': 5, 'subject': 'Show Name', 'media': {'mediaType': 'tv'}, 'problemSeason': 2, 'problemEpisode': 3}),
+            'Show Name S02E03',
+        )
+        self.assertEqual(
+            self.modules.build_issue_label({'id': 5, 'subject': None, 'media': {'mediaType': 'movie'}}),
+            '\U0001f3ac Issue #5',
+        )
+        self.assertEqual(
+            self.modules.build_issue_label({'id': 5, 'subject': None, 'media': {'mediaType': 'tv'}, 'problemSeason': 1, 'problemEpisode': 7}),
+            '\U0001f4fa Issue #5 S01E07',
+        )
+
     def test_build_redownload_confirmation(self):
         text = self.modules.build_redownload_confirmation({'media_type': 'movie', 'label': 'Movie title', 'issue_id': 29, 'file_path': '/movies/Movie title.mkv', 'service': 'Radarr'})
         self.assertIn('Movie title', text)

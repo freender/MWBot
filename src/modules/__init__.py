@@ -31,6 +31,7 @@ from modules.maintenance import (
 from modules.redownload import (
     ISSUE_STATUS_OPEN,
     ISSUE_STATUS_RESOLVED,
+    build_issue_label,
     build_redownload_confirmation,
     build_target_label,
     delete_queue_item,
@@ -40,6 +41,7 @@ from modules.redownload import (
     get_all_seerr_issue_ids,
     get_episode,
     get_issue_target,
+    get_open_seerr_issues,
     get_seerr_issue,
     get_seerr_media_details,
     is_issue_open,

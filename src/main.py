@@ -9,6 +9,7 @@ from modules import (
     COMMANDS,
     HELP_SECTIONS,
     add_asn_to_firewall_rule,
+    build_issue_label,
     build_mw_state,
     build_redownload_confirmation,
     disable_asn_to_firewall_rule,
@@ -16,6 +17,7 @@ from modules import (
     format_duration,
     get_asn_from_ip,
     get_mw_status_text,
+    get_open_seerr_issues,
     is_auth_user,
     is_command,
     is_owner,
@@ -195,10 +197,33 @@ def command_redownload(message):
 
 
 def _start_redownload_flow(chat_id, user_id):
+    bot.send_chat_action(chat_id, 'typing')
+    try:
+        open_issues = get_open_seerr_issues()
+    except Exception as exc:
+        logging.error('Failed to fetch open Seerr issues: %s', exc, exc_info=True)
+        open_issues = []
+
+    if open_issues:
+        markup = InlineKeyboardMarkup(row_width=1)
+        for issue in open_issues:
+            issue_id = issue.get('id')
+            label = build_issue_label(issue)
+            markup.add(InlineKeyboardButton(label, callback_data=f'redownload_issue:{issue_id}'))
+        markup.add(
+            InlineKeyboardButton('Paste URL instead', callback_data='redownload_url'),
+            InlineKeyboardButton('Cancel', callback_data='cancel'),
+        )
+        bot.send_message(chat_id, 'Select an issue to redownload:', reply_markup=markup)
+    else:
+        _start_redownload_url_flow(chat_id, user_id, 'No open issues found.\nPaste a Seerr URL to replace a release:')
+
+
+def _start_redownload_url_flow(chat_id, user_id, prompt=None):
     _set_flow(chat_id, 'redownload')
     sent = bot.send_message(
         chat_id,
-        'Send a Seerr movie URL or an episode-linked Seerr issue URL to replace the current release.',
+        prompt or 'Paste a Seerr movie URL or an episode-linked issue URL:',
         reply_markup=_cancel_markup(),
     )
     register_owned_next_step(sent, handle_redownload_issue_url, chat_id, user_id)
@@ -224,32 +249,6 @@ def handle_redownload_issue_url(message):
         build_redownload_confirmation(target),
         reply_markup=_confirm_cancel_markup('redownload_confirm'),
     )
-
-
-def handle_redownload_confirmation(message, target):
-    response = (message.text or '').strip().lower()
-    if response == 'cancel':
-        bot.reply_to(message, 'Redownload request cancelled.')
-        return
-    if response != 'yes':
-        sent = bot.reply_to(
-            message,
-            'Please reply <b>yes</b> to continue or <b>cancel</b> to abort.',
-            parse_mode='HTML',
-            reply_markup=_confirm_cancel_markup('redownload_confirm'),
-        )
-        register_owned_next_step(
-            sent,
-            handle_redownload_confirmation,
-            message.chat.id,
-            _get_user_id(message),
-            target,
-        )
-        return
-
-    bot.send_chat_action(message.chat.id, 'typing')
-    result = execute_redownload(target)
-    bot.reply_to(message, result or 'Redownload request completed.')
 
 
 # ── Maintenance Windows ──────────────────────────────────────────────
@@ -441,6 +440,33 @@ def handle_callback(call):
             bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
             return
         bot.send_message(chat_id, get_mw_status_text())
+        return
+
+    # Redownload: user picked an issue from the list
+    if data.startswith('redownload_issue:'):
+        issue_id_str = data.split(':', 1)[1]
+        bot.answer_callback_query(call.id)
+        bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
+        bot.send_chat_action(chat_id, 'typing')
+        seerr_url = f'{cfg.SEERR_BASE_URL}/issues/{issue_id_str}'
+        target, error = resolve_redownload_issue(seerr_url)
+        if target is None:
+            bot.send_message(chat_id, error or 'Unable to resolve Seerr issue.')
+            return
+        key = _pending_key(chat_id, user_id)
+        _pending_redownloads[key] = target
+        bot.send_message(
+            chat_id,
+            build_redownload_confirmation(target),
+            reply_markup=_confirm_cancel_markup('redownload_confirm'),
+        )
+        return
+
+    # Redownload: user wants to paste a URL instead
+    if data == 'redownload_url':
+        bot.answer_callback_query(call.id)
+        bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
+        _start_redownload_url_flow(chat_id, user_id)
         return
 
     # Redownload confirm
