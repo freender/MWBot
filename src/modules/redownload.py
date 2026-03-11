@@ -10,6 +10,13 @@ from modules.common import build_api_headers, extract_records, normalize_base_ur
 SEERR_ISSUE_URL_PATTERN = re.compile(r'(?:https?://)?[^\s]+/issues/(\d+)(?:[/?#].*)?$', re.IGNORECASE)
 SEERR_MEDIA_URL_PATTERN = re.compile(r'(?:https?://)?[^\s]+/(?P<media_type>movie|tv|series)/(?:[^/?#]+/)?(?P<tmdb_id>\d+)(?:[/?#].*)?$', re.IGNORECASE)
 
+ISSUE_TYPE_LABELS = {
+    1: 'Video',
+    2: 'Audio',
+    3: 'Subtitles',
+    4: 'Other',
+}
+
 
 def parse_seerr_issue_url(text):
     if not text:
@@ -116,14 +123,59 @@ def get_open_seerr_issues():
         page_info = payload.get('pageInfo') or {}
         total_pages = page_info.get('pages') or 0
         if page >= total_pages or not results:
-            return issues
+            break
         page += 1
+
+    media_details_cache = {}
+    actionable_issues = []
+    for issue in issues:
+        target, _error = get_issue_target(issue)
+        if target is None:
+            continue
+
+        media = issue.get('media') or {}
+        media_type = media.get('mediaType')
+        tmdb_id = media.get('tmdbId')
+        cache_key = (media_type, tmdb_id)
+        if media_type in ('movie', 'tv') and tmdb_id and cache_key not in media_details_cache:
+            media_details, _error = get_seerr_media_details(media_type, tmdb_id)
+            media_details_cache[cache_key] = media_details or {}
+
+        media_details = media_details_cache.get(cache_key) or {}
+        display_title = media_details.get('title') or media_details.get('name')
+        if display_title:
+            issue['display_title'] = display_title
+        actionable_issues.append(issue)
+
+    actionable_issues.sort(key=issue_sort_key, reverse=True)
+    return actionable_issues
+
+
+def get_issue_display_title(issue):
+    media = issue.get('media') or {}
+    media_type = media.get('mediaType') or ''
+
+    title = issue.get('display_title') or media.get('title') or media.get('name')
+    if title:
+        return title
+
+    fallback_id = media.get('tmdbId') or media.get('externalServiceId') or issue.get('id', '?')
+    if media_type == 'movie':
+        return f'Movie #{fallback_id}'
+    if media_type == 'tv':
+        return f'Series #{fallback_id}'
+    return issue.get('subject') or f'Issue #{issue.get("id", "?")}'
+
+
+def get_issue_type_label(issue):
+    return ISSUE_TYPE_LABELS.get(issue.get('issueType'))
 
 
 def build_issue_label(issue):
-    subject = issue.get('subject') or ''
     media = issue.get('media') or {}
     media_type = media.get('mediaType') or ''
+    title = get_issue_display_title(issue)
+    issue_type = get_issue_type_label(issue)
 
     season = issue.get('problemSeason')
     episode = issue.get('problemEpisode')
@@ -132,11 +184,9 @@ def build_issue_label(issue):
     else:
         ep_tag = ''
 
-    if subject:
-        return f'{subject}{ep_tag}'
-
-    icon = '\U0001f3ac' if media_type == 'movie' else '\U0001f4fa' if media_type == 'tv' else ''
-    return f'{icon} Issue #{issue.get("id", "?")}{ep_tag}'.strip()
+    if issue_type:
+        return f'{title}{ep_tag} - {issue_type}'
+    return f'{title}{ep_tag}'
 
 
 def issue_sort_key(issue):

@@ -353,21 +353,39 @@ class ModulesTest(unittest.TestCase):
 
     def test_build_issue_label(self):
         self.assertEqual(
-            self.modules.build_issue_label({'id': 5, 'subject': 'Bad Movie', 'media': {'mediaType': 'movie'}}),
-            'Bad Movie',
+            self.modules.build_issue_label({'id': 5, 'issueType': 1, 'display_title': 'Bad Movie', 'media': {'mediaType': 'movie'}}),
+            'Bad Movie - Video',
         )
         self.assertEqual(
-            self.modules.build_issue_label({'id': 5, 'subject': 'Show Name', 'media': {'mediaType': 'tv'}, 'problemSeason': 2, 'problemEpisode': 3}),
-            'Show Name S02E03',
+            self.modules.build_issue_label({'id': 5, 'issueType': 2, 'display_title': 'Show Name', 'media': {'mediaType': 'tv'}, 'problemSeason': 2, 'problemEpisode': 3}),
+            'Show Name S02E03 - Audio',
         )
         self.assertEqual(
-            self.modules.build_issue_label({'id': 5, 'subject': None, 'media': {'mediaType': 'movie'}}),
-            '\U0001f3ac Issue #5',
+            self.modules.build_issue_label({'id': 5, 'media': {'mediaType': 'movie', 'tmdbId': 550}}),
+            'Movie #550',
         )
         self.assertEqual(
-            self.modules.build_issue_label({'id': 5, 'subject': None, 'media': {'mediaType': 'tv'}, 'problemSeason': 1, 'problemEpisode': 7}),
-            '\U0001f4fa Issue #5 S01E07',
+            self.modules.build_issue_label({'id': 5, 'issueType': 3, 'media': {'mediaType': 'tv', 'tmdbId': 2316}, 'problemSeason': 1, 'problemEpisode': 7}),
+            'Series #2316 S01E07 - Subtitles',
         )
+
+    def test_get_open_seerr_issues_filters_and_enriches_titles(self):
+        issue_payload = {
+            'results': [
+                {'id': 11, 'status': 1, 'issueType': 1, 'media': {'mediaType': 'movie', 'tmdbId': 550, 'externalServiceId': 44}},
+                {'id': 12, 'status': 1, 'issueType': 2, 'media': {'mediaType': 'tv', 'tmdbId': 2316, 'externalServiceId': 77}, 'problemSeason': 1, 'problemEpisode': 2},
+                {'id': 13, 'status': 1, 'issueType': 4, 'media': {'mediaType': 'tv', 'tmdbId': 2316, 'externalServiceId': 77}},
+            ],
+            'pageInfo': {'pages': 1},
+        }
+
+        with mock.patch.object(self.redownload, 'request_json', return_value=issue_payload), \
+             mock.patch.object(self.redownload, 'get_seerr_media_details', side_effect=[({'title': 'Fight Club'}, None), ({'name': 'The Office'}, None)]):
+            issues = self.modules.get_open_seerr_issues()
+
+        self.assertEqual([issue['id'] for issue in issues], [12, 11])
+        self.assertEqual(issues[0]['display_title'], 'The Office')
+        self.assertEqual(issues[1]['display_title'], 'Fight Club')
 
     def test_build_redownload_confirmation(self):
         text = self.modules.build_redownload_confirmation({'media_type': 'movie', 'label': 'Movie title', 'issue_id': 29, 'file_path': '/movies/Movie title.mkv', 'service': 'Radarr'})

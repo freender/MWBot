@@ -210,45 +210,21 @@ def _start_redownload_flow(chat_id, user_id):
             issue_id = issue.get('id')
             label = build_issue_label(issue)
             markup.add(InlineKeyboardButton(label, callback_data=f'redownload_issue:{issue_id}'))
-        markup.add(
-            InlineKeyboardButton('Paste URL instead', callback_data='redownload_url'),
-            InlineKeyboardButton('Cancel', callback_data='cancel'),
+        markup.add(InlineKeyboardButton('Open Overseerr', url=cfg.SEERR_BASE_URL))
+        markup.add(InlineKeyboardButton('Cancel', callback_data='cancel'))
+        bot.send_message(
+            chat_id,
+            'Pick the title with the bad release.\nIf it is not listed, create a new issue in Overseerr first.',
+            reply_markup=markup,
         )
-        bot.send_message(chat_id, 'Select an issue to redownload:', reply_markup=markup)
     else:
-        _start_redownload_url_flow(chat_id, user_id, 'No open issues found.\nPaste a Seerr URL to replace a release:')
-
-
-def _start_redownload_url_flow(chat_id, user_id, prompt=None):
-    _set_flow(chat_id, 'redownload')
-    sent = bot.send_message(
-        chat_id,
-        prompt or 'Paste a Seerr movie URL or an episode-linked issue URL:',
-        reply_markup=_cancel_markup(),
-    )
-    register_owned_next_step(sent, handle_redownload_issue_url, chat_id, user_id)
-
-
-def handle_redownload_issue_url(message):
-    if not _check_flow(message.chat.id, 'redownload'):
-        return
-    _clear_flow(message.chat.id)
-
-    url = message.text or ''
-    bot.send_chat_action(message.chat.id, 'typing')
-    target, error = resolve_redownload_issue(url)
-    if target is None:
-        bot.reply_to(message, error or 'Unable to resolve Seerr issue.')
-        return
-
-    key = _pending_key(message.chat.id, _get_user_id(message))
-    _pending_redownloads[key] = target
-
-    bot.send_message(
-        message.chat.id,
-        build_redownload_confirmation(target),
-        reply_markup=_confirm_cancel_markup('redownload_confirm'),
-    )
+        markup = InlineKeyboardMarkup(row_width=1)
+        markup.add(InlineKeyboardButton('Open Overseerr', url=cfg.SEERR_BASE_URL))
+        bot.send_message(
+            chat_id,
+            'No open redownload issues right now.\nCreate a new issue in Overseerr, then come back here.',
+            reply_markup=markup,
+        )
 
 
 # ── Maintenance Windows ──────────────────────────────────────────────
@@ -444,6 +420,9 @@ def handle_callback(call):
 
     # Redownload: user picked an issue from the list
     if data.startswith('redownload_issue:'):
+        if str(user_id) not in cfg.TELEGRAM_AUTH_USERS:
+            bot.answer_callback_query(call.id, text='Not authorized')
+            return
         issue_id_str = data.split(':', 1)[1]
         bot.answer_callback_query(call.id)
         bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
@@ -460,13 +439,6 @@ def handle_callback(call):
             build_redownload_confirmation(target),
             reply_markup=_confirm_cancel_markup('redownload_confirm'),
         )
-        return
-
-    # Redownload: user wants to paste a URL instead
-    if data == 'redownload_url':
-        bot.answer_callback_query(call.id)
-        bot.edit_message_reply_markup(chat_id=chat_id, message_id=call.message.message_id, reply_markup=None)
-        _start_redownload_url_flow(chat_id, user_id)
         return
 
     # Redownload confirm
