@@ -189,7 +189,7 @@ def command_help(message):
 
 @bot.message_handler(commands=['redownload'])
 @safe_command
-@owner_only
+@auth_user_only
 def command_redownload(message):
     _start_redownload_flow(message.chat.id, _get_user_id(message))
 
@@ -424,7 +424,7 @@ def handle_callback(call):
 
     if data == 'cmd_redownload':
         bot.answer_callback_query(call.id)
-        if user_id != cfg.OWNER:
+        if str(user_id) not in cfg.TELEGRAM_AUTH_USERS:
             bot.send_message(chat_id, 'Sorry you are not allowed to use this command!')
             return
         _start_redownload_flow(chat_id, user_id)
