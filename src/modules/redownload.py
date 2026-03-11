@@ -601,6 +601,28 @@ def build_redownload_confirmation(target):
     )
 
 
+ISSUE_STATUS_OPEN = 1
+ISSUE_STATUS_RESOLVED = 2
+
+
+def is_issue_open(issue):
+    return issue.get('status') == ISSUE_STATUS_OPEN
+
+
+def resolve_seerr_issue(issue_id):
+    url = f"{normalize_base_url(cfg.SEERR_BASE_URL)}/api/v1/issue/{issue_id}/resolved"
+    try:
+        request_json('POST', url, headers=build_api_headers(cfg.SEERR_API_KEY))
+        return True, None
+    except requests.exceptions.HTTPError as exc:
+        status_code = exc.response.status_code if exc.response is not None else 'unknown'
+        logging.error('Unable to resolve Seerr issue %s: %s', issue_id, exc)
+        return False, f'Failed to resolve Seerr issue (status {status_code}).'
+    except requests.exceptions.RequestException as exc:
+        logging.error('Unable to resolve Seerr issue %s: %s', issue_id, exc)
+        return False, 'Unable to reach Seerr to resolve issue.'
+
+
 def resolve_redownload_issue(url):
     reference, error = parse_seerr_reference(url)
     if reference is None:
@@ -621,6 +643,9 @@ def resolve_redownload_issue(url):
             return None, error
         issue_id = issue['id']
 
+    if not is_issue_open(issue):
+        return None, f'Seerr issue #{issue_id} is already resolved.'
+
     target, error = get_issue_target(issue)
     if target is None:
         return None, error
@@ -635,7 +660,18 @@ def resolve_redownload_issue(url):
 
 def execute_redownload(target):
     if target['media_type'] == 'movie':
-        return process_radarr_redownload(target)
-    if target['media_type'] == 'episode':
-        return process_sonarr_redownload(target)
-    return 'Unsupported redownload target.'
+        result = process_radarr_redownload(target)
+    elif target['media_type'] == 'episode':
+        result = process_sonarr_redownload(target)
+    else:
+        return 'Unsupported redownload target.'
+
+    issue_id = target.get('issue_id')
+    if issue_id and 'Blacklisted' in (result or ''):
+        success, error = resolve_seerr_issue(issue_id)
+        if success:
+            result += f' Seerr issue #{issue_id} has been resolved.'
+        else:
+            result += f' Warning: {error}'
+
+    return result

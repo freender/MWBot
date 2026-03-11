@@ -29,6 +29,8 @@ from modules.maintenance import (
     stop_timed_mw,
 )
 from modules.redownload import (
+    ISSUE_STATUS_OPEN,
+    ISSUE_STATUS_RESOLVED,
     build_redownload_confirmation,
     build_target_label,
     delete_queue_item,
@@ -40,6 +42,7 @@ from modules.redownload import (
     get_issue_target,
     get_seerr_issue,
     get_seerr_media_details,
+    is_issue_open,
     issue_sort_key,
     mark_history_failed,
     parse_seerr_issue_url,
@@ -47,6 +50,7 @@ from modules.redownload import (
     process_radarr_redownload,
     process_sonarr_redownload,
     resolve_redownload_issue,
+    resolve_seerr_issue,
     select_failed_history_record,
 )
 

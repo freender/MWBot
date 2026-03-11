@@ -168,6 +168,7 @@ class ModulesTest(unittest.TestCase):
 
     def test_resolve_redownload_issue(self):
         issue_payload = {
+            'status': 1,
             'subject': 'Movie title',
             'media': {'mediaType': 'movie', 'externalServiceId': 44},
         }
@@ -180,9 +181,23 @@ class ModulesTest(unittest.TestCase):
         self.assertEqual(target['issue_id'], 29)
         self.assertEqual(target['movie_id'], 44)
 
+    def test_resolve_redownload_issue_rejects_resolved_issue(self):
+        issue_payload = {
+            'status': 2,
+            'subject': 'Movie title',
+            'media': {'mediaType': 'movie', 'externalServiceId': 44},
+        }
+
+        with mock.patch.object(self.redownload, 'get_seerr_issue', return_value=(issue_payload, None)):
+            target, error = self.modules.resolve_redownload_issue('https://seerr.example.com/issues/29')
+
+        self.assertIsNone(target)
+        self.assertIn('already resolved', error)
+
     def test_resolve_redownload_issue_from_media_url(self):
         issue_payload = {
             'id': 29,
+            'status': 1,
             'subject': None,
             'updatedAt': '2026-03-10T00:00:00.000Z',
             'media': {'id': 4579, 'tmdbId': 1220564, 'mediaType': 'movie', 'externalServiceId': 44},
@@ -291,6 +306,41 @@ class ModulesTest(unittest.TestCase):
             result = self.modules.execute_redownload(target)
 
         self.assertEqual(result, 'Blacklisted release, deleted the current file, and triggered a fresh search for Show S01E02.')
+
+    def test_execute_redownload_resolves_seerr_issue_on_success(self):
+        target = {'media_type': 'movie', 'movie_id': 44, 'label': 'Movie title', 'file_id': 700, 'issue_id': 29}
+        responses = [
+            [{'id': 501, 'movieId': 44}],
+            None,
+        ]
+
+        with mock.patch.object(self.redownload, 'request_json', side_effect=responses), \
+             mock.patch.object(self.redownload, 'resolve_seerr_issue', return_value=(True, None)) as mock_resolve:
+            result = self.modules.execute_redownload(target)
+
+        mock_resolve.assert_called_once_with(29)
+        self.assertIn('Blacklisted', result)
+        self.assertIn('issue #29 has been resolved', result)
+
+    def test_execute_redownload_reports_resolve_failure(self):
+        target = {'media_type': 'movie', 'movie_id': 44, 'label': 'Movie title', 'file_id': 700, 'issue_id': 29}
+        responses = [
+            [{'id': 501, 'movieId': 44}],
+            None,
+        ]
+
+        with mock.patch.object(self.redownload, 'request_json', side_effect=responses), \
+             mock.patch.object(self.redownload, 'resolve_seerr_issue', return_value=(False, 'Failed to resolve Seerr issue (status 500).')):
+            result = self.modules.execute_redownload(target)
+
+        self.assertIn('Blacklisted', result)
+        self.assertIn('Warning:', result)
+
+    def test_is_issue_open(self):
+        self.assertTrue(self.modules.is_issue_open({'status': 1}))
+        self.assertFalse(self.modules.is_issue_open({'status': 2}))
+        self.assertFalse(self.modules.is_issue_open({'status': None}))
+        self.assertFalse(self.modules.is_issue_open({}))
 
     def test_select_failed_history_record_prefers_grabbed_events(self):
         record = self.modules.select_failed_history_record([
