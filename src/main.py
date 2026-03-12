@@ -47,6 +47,9 @@ _pending_redownloads = {}
 # so Cancel can invalidate it and next-step handlers can check before running
 _active_flows = {}
 
+# -- Latest menu message keyed by chat_id -- keeps /start tidy by replacing old menu messages
+_home_menu_messages = {}
+
 
 def start_background_threads(active_bot):
     scheduler_thread = threading.Thread(target=schedule_fw_task, daemon=True)
@@ -150,17 +153,34 @@ def _show_menu(chat_id, text, reply_markup, message_id=None):
                 disable_web_page_preview=True,
                 reply_markup=reply_markup,
             )
-            return
+            return message_id
         except Exception as exc:
             logging.warning('Unable to update menu message %s in chat %s: %s', message_id, chat_id, exc)
 
-    bot.send_message(
+    sent = bot.send_message(
         chat_id,
         text,
         parse_mode='HTML',
         disable_web_page_preview=True,
         reply_markup=reply_markup,
     )
+    return getattr(sent, 'message_id', None)
+
+
+def _delete_bot_message(chat_id, message_id):
+    if not chat_id or not message_id:
+        return False
+    try:
+        bot.delete_message(chat_id, message_id)
+        return True
+    except Exception as exc:
+        logging.warning('Unable to delete message %s in chat %s: %s', message_id, chat_id, exc)
+        return False
+
+
+def _clear_home_menu_message(chat_id, message_id):
+    if _home_menu_messages.get(chat_id) == message_id:
+        _home_menu_messages.pop(chat_id, None)
 
 
 def _home_markup(user_id):
@@ -273,12 +293,14 @@ def _show_home_menu(chat_id, user_id=None, message_id=None):
         + id_line
         + body
     )
-    _show_menu(
+    menu_message_id = _show_menu(
         chat_id,
         text,
         _home_markup(display_user_id),
         message_id=message_id,
     )
+    if menu_message_id is not None:
+        _home_menu_messages[chat_id] = menu_message_id
 
 
 def _show_plex_menu(chat_id, user_id=None, message_id=None):
@@ -390,6 +412,9 @@ def _stop_notified_mw():
 
 @bot.message_handler(commands=['start'])
 def command_start(message):
+    previous_menu_message_id = _home_menu_messages.pop(message.chat.id, None)
+    if previous_menu_message_id is not None:
+        _delete_bot_message(message.chat.id, previous_menu_message_id)
     _show_home_menu(message.chat.id, user_id=_get_user_id(message))
 
 
@@ -551,8 +576,13 @@ def _handle_cancel(call):
 
 
 def _handle_menu_close(call):
-    bot.answer_callback_query(call.id, text='Closed')
-    bot.edit_message_reply_markup(chat_id=call.message.chat.id, message_id=call.message.message_id, reply_markup=None)
+    chat_id = call.message.chat.id
+    message_id = call.message.message_id
+    bot.answer_callback_query(call.id)
+    _clear_home_menu_message(chat_id, message_id)
+    if _delete_bot_message(chat_id, message_id):
+        return
+    bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
 
 
 def _handle_nav_home(call):

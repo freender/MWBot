@@ -26,6 +26,9 @@ class DummyTeleBot:
         self.sent_messages.append((args, kwargs))
         return mock.Mock(message_id=999)
 
+    def delete_message(self, *args, **kwargs):
+        return None
+
     def edit_message_text(self, *args, **kwargs):
         return None
 
@@ -165,6 +168,25 @@ class MainAuthTest(unittest.TestCase):
         self.assertIn('📡 Plex Access', labels)
         self.assertIn('🎬 Media', labels)
         self.assertIn('🔧 Maintenance', labels)
+
+    def test_home_menu_tracks_latest_message_id(self):
+        with mock.patch.object(self.main, '_show_menu', return_value=77) as show_menu:
+            self.main._show_home_menu(10, user_id=10)
+
+        show_menu.assert_called_once()
+        self.assertEqual(self.main._home_menu_messages[10], 77)
+
+    def test_start_replaces_previous_home_menu_message(self):
+        message = mock.Mock(chat=mock.Mock(id=100), from_user=mock.Mock(id=20))
+        self.main._home_menu_messages[100] = 44
+
+        with mock.patch.object(self.main, '_delete_bot_message', return_value=True) as delete_bot_message, \
+             mock.patch.object(self.main, '_show_home_menu') as show_home_menu:
+            self.main.command_start(message)
+
+        delete_bot_message.assert_called_once_with(100, 44)
+        show_home_menu.assert_called_once_with(100, user_id=20)
+        self.assertNotIn(100, self.main._home_menu_messages)
 
     def test_plex_menu_hides_reset_for_authorized_non_owner(self):
         with mock.patch.object(self.main, '_show_menu') as show_menu:
@@ -353,6 +375,34 @@ class MainAuthTest(unittest.TestCase):
         send_chat_action.assert_called_once_with(100, 'typing')
         handle_mw_action.assert_called_once_with(call, 'mw text')
         answer_callback_query.assert_called_once_with('call-id')
+
+    def test_menu_close_deletes_message(self):
+        call = make_call(20, data='menu_close')
+        self.main._home_menu_messages[100] = 55
+
+        with mock.patch.object(self.main, '_delete_bot_message', return_value=True) as delete_bot_message, \
+             mock.patch.object(self.main.bot, 'answer_callback_query') as answer_callback_query, \
+             mock.patch.object(self.main.bot, 'edit_message_reply_markup') as edit_message_reply_markup:
+            self.main._handle_menu_close(call)
+
+        delete_bot_message.assert_called_once_with(100, 55)
+        edit_message_reply_markup.assert_not_called()
+        answer_callback_query.assert_called_once_with('call-id')
+        self.assertNotIn(100, self.main._home_menu_messages)
+
+    def test_menu_close_falls_back_to_clearing_buttons(self):
+        call = make_call(20, data='menu_close')
+        self.main._home_menu_messages[100] = 55
+
+        with mock.patch.object(self.main, '_delete_bot_message', return_value=False) as delete_bot_message, \
+             mock.patch.object(self.main.bot, 'answer_callback_query') as answer_callback_query, \
+             mock.patch.object(self.main.bot, 'edit_message_reply_markup') as edit_message_reply_markup:
+            self.main._handle_menu_close(call)
+
+        delete_bot_message.assert_called_once_with(100, 55)
+        edit_message_reply_markup.assert_called_once_with(chat_id=100, message_id=55, reply_markup=None)
+        answer_callback_query.assert_called_once_with('call-id')
+        self.assertNotIn(100, self.main._home_menu_messages)
 
     def test_redownload_issue_callback_rejects_unauthorized_user(self):
         call = make_call(30, data='redownload_issue:29')
