@@ -167,11 +167,11 @@ class ModulesTest(unittest.TestCase):
         self.assertEqual(reference, {'reference_type': 'media', 'media_type': 'tv', 'tmdb_id': 1408})
 
     def test_parse_seerr_reference_accepts_urls_without_scheme(self):
-        reference, error = self.modules.parse_seerr_reference('overseerr.freender.net/issues/29')
+        reference, error = self.modules.parse_seerr_reference('seerr.example.com/issues/29')
         self.assertIsNone(error)
         self.assertEqual(reference, {'reference_type': 'issue', 'issue_id': 29})
 
-        reference, error = self.modules.parse_seerr_reference('overseerr.freender.net/movie/1220564')
+        reference, error = self.modules.parse_seerr_reference('seerr.example.com/movie/1220564')
         self.assertIsNone(error)
         self.assertEqual(reference, {'reference_type': 'media', 'media_type': 'movie', 'tmdb_id': 1220564})
 

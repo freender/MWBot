@@ -226,7 +226,7 @@ def _media_markup():
     markup.add(InlineKeyboardButton('📋 Pick Open Issue', callback_data='media_redownload'))
     seerr_browser_url = _get_seerr_browser_url()
     if seerr_browser_url:
-        markup.add(InlineKeyboardButton('🌐 Open Overseerr', url=seerr_browser_url))
+        markup.add(InlineKeyboardButton('🌐 Open Seerr', url=seerr_browser_url))
     markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_home'))
     return markup
 
@@ -270,7 +270,7 @@ def _media_result_markup():
     markup.add(InlineKeyboardButton('📋 Pick Open Issue', callback_data='media_redownload'))
     seerr_browser_url = _get_seerr_browser_url()
     if seerr_browser_url:
-        markup.add(InlineKeyboardButton('🌐 Open Overseerr', url=seerr_browser_url))
+        markup.add(InlineKeyboardButton('🌐 Open Seerr', url=seerr_browser_url))
     markup.add(
         InlineKeyboardButton('⬅ Back', callback_data='nav_media'),
         InlineKeyboardButton('🏠 Home', callback_data='nav_home'),
@@ -290,11 +290,17 @@ def _maintenance_result_markup():
 
 def _show_home_menu(chat_id, user_id=None, message_id=None):
     display_user_id = user_id if user_id is not None else chat_id
+    if is_auth_chat_id(display_user_id):
+        id_line = f'<b>Your Telegram ID:</b> <code>{display_user_id}</code>\n\n'
+    else:
+        id_line = (
+            f'<b>Your Telegram ID:</b> <code>{display_user_id}</code>\n'
+            'Paste this into Seerr -> Notifications -> Telegram Chat ID.\n\n'
+        )
     text = (
         '🤖 <b>MWBot</b>\n\n'
-        f'<b>Your Telegram ID:</b> <code>{display_user_id}</code>\n'
-        'Paste this into Seerr -> Notifications -> Telegram Chat ID.\n\n'
-        '<b>Choose a section</b> to manage Plex, redownloads, or maintenance windows.'
+        + id_line
+        + '<b>Choose a section</b> to manage Plex, redownloads, or maintenance windows.'
     )
     _show_menu(
         chat_id,
@@ -318,7 +324,7 @@ def _show_media_menu(chat_id, message_id=None):
     _show_menu(
         chat_id,
         '🎬 <b>Media</b>\n'
-        'Pick an open Seerr issue to replace a bad release, or jump into Overseerr first.',
+        'Pick an open Seerr issue to replace a bad release, or jump into Seerr first.',
         _media_markup(),
         message_id=message_id,
     )
@@ -474,14 +480,14 @@ def _start_redownload_flow(chat_id, user_id, message_id=None):
             label = build_issue_label(issue)
             markup.add(InlineKeyboardButton(label, callback_data=f'redownload_issue:{issue_id}'))
         if seerr_browser_url:
-            markup.add(InlineKeyboardButton('Open Overseerr', url=seerr_browser_url))
+            markup.add(InlineKeyboardButton('Open Seerr', url=seerr_browser_url))
         if message_id is not None:
             markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_media'))
             _show_menu(
                 chat_id,
                 '🎬 <b>Pick Open Issue</b>\n'
                 'Choose the title with the bad release.\n'
-                'If it is not listed, open Overseerr first and create a new issue.',
+                'If it is not listed, open Seerr first and create a new issue.',
                 markup,
                 message_id=message_id,
             )
@@ -489,19 +495,19 @@ def _start_redownload_flow(chat_id, user_id, message_id=None):
             markup.add(InlineKeyboardButton('Cancel', callback_data='cancel'))
             bot.send_message(
                 chat_id,
-                'Pick the title with the bad release.\nIf it is not listed, create a new issue in Overseerr first.',
+                'Pick the title with the bad release.\nIf it is not listed, create a new issue in Seerr first.',
                 reply_markup=markup,
             )
     else:
         markup = InlineKeyboardMarkup(row_width=1)
         if seerr_browser_url:
-            markup.add(InlineKeyboardButton('Open Overseerr', url=seerr_browser_url))
+            markup.add(InlineKeyboardButton('Open Seerr', url=seerr_browser_url))
         if message_id is not None:
             markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_media'))
             _show_menu(
                 chat_id,
                 '🎬 <b>No Open Issues</b>\n'
-                'Create a new issue in Overseerr, then come back here.',
+                'Create a new issue in Seerr, then come back here.',
                 markup,
                 message_id=message_id,
             )
@@ -509,7 +515,7 @@ def _start_redownload_flow(chat_id, user_id, message_id=None):
             markup.add(InlineKeyboardButton('Cancel', callback_data='cancel'))
             bot.send_message(
                 chat_id,
-                'No open redownload issues right now.\nCreate a new issue in Overseerr, then come back here.',
+                'No open redownload issues right now.\nCreate a new issue in Seerr, then come back here.',
                 reply_markup=markup,
             )
 
