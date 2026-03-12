@@ -17,12 +17,29 @@ def _get_int(name):
         raise RuntimeError(f'Environment variable {name} must be an integer.') from exc
 
 
+def _get_optional_int(name):
+    value = os.getenv(name)
+    if value is None or value == '':
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise RuntimeError(f'Environment variable {name} must be an integer when provided.') from exc
+
+
 def _get_json(name):
     value = _require_env(name)
     try:
         return json.loads(value)
     except json.JSONDecodeError as exc:
         raise RuntimeError(f'Environment variable {name} must contain valid JSON.') from exc
+
+
+def _get_bool(name, default=False):
+    value = os.getenv(name)
+    if value is None or value == '':
+        return default
+    return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
 
 
 TOKEN = _require_env('TOKEN')
@@ -44,6 +61,9 @@ TZ = _require_env('TZ')
 SEERR_BASE_URL = _require_env('SEERR_BASE_URL')
 SEERR_PUBLIC_URL = os.getenv('SEERR_PUBLIC_URL', '')
 SEERR_API_KEY = _require_env('SEERR_API_KEY')
+SEERR_ACCESS_ENV_ONLY = _get_bool('SEERR_ACCESS_ENV_ONLY', default=False)
+SEERR_ACCESS_TEST_USER_ID = _get_optional_int('SEERR_ACCESS_TEST_USER_ID')
+SEERR_ACCESS_TEST_MODE = os.getenv('SEERR_ACCESS_TEST_MODE', '').strip().lower()
 SONARR_BASE_URL = _require_env('SONARR_BASE_URL')
 SONARR_API_KEY = _require_env('SONARR_API_KEY')
 RADARR_BASE_URL = _require_env('RADARR_BASE_URL')

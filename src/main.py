@@ -3,7 +3,6 @@ import cfg
 import logging
 import threading
 from datetime import timedelta
-from functools import wraps
 from html import escape
 from urllib.parse import urlparse, urlunparse
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -17,13 +16,12 @@ from modules import (
     execute_redownload,
     format_duration,
     get_asn_from_ip,
+    get_firewall_status_text,
     get_mw_status_text,
     get_open_seerr_issues,
     is_auth_chat_id,
-    is_auth_user,
     is_command,
     is_owner_chat_id,
-    is_owner,
     is_valid_ip,
     maintain_timed_mw,
     replace_mw_state,
@@ -96,41 +94,6 @@ def register_owned_next_step(sent_message, handler, expected_chat_id, expected_u
     bot.register_next_step_handler_by_chat_id(expected_chat_id, wrapped)
 
 
-def owner_only(handler):
-    @wraps(handler)
-    def wrapper(message, *args, **kwargs):
-        if not is_owner(message):
-            bot.reply_to(message, 'Sorry you are not allowed to use this command!')
-            return
-        return handler(message, *args, **kwargs)
-
-    return wrapper
-
-
-def auth_user_only(handler):
-    @wraps(handler)
-    def wrapper(message, *args, **kwargs):
-        if not is_auth_user(message):
-            bot.reply_to(message, 'Sorry you are not allowed to use this command!')
-            return
-        return handler(message, *args, **kwargs)
-
-    return wrapper
-
-
-def safe_command(handler):
-    @wraps(handler)
-    def wrapper(message, *args, **kwargs):
-        try:
-            return handler(message, *args, **kwargs)
-        except Exception as exc:
-            error_msg = '❌ Unexpected error occurred. Check logs for details.'
-            logging.error('Error in %s: %s', handler.__name__, exc, exc_info=True)
-            bot.reply_to(message, error_msg)
-
-    return wrapper
-
-
 def _get_user_id(message):
     return getattr(getattr(message, 'from_user', None), 'id', None)
 
@@ -200,23 +163,26 @@ def _show_menu(chat_id, text, reply_markup, message_id=None):
     )
 
 
-def _home_markup():
+def _home_markup(user_id):
     markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton('📡 Plex Access', callback_data='nav_plex'),
-        InlineKeyboardButton('🎬 Media', callback_data='nav_media'),
-    )
-    markup.add(InlineKeyboardButton('🔧 Maintenance', callback_data='nav_mw'))
+    if is_auth_chat_id(user_id):
+        markup.add(
+            InlineKeyboardButton('📡 Plex Access', callback_data='nav_plex'),
+            InlineKeyboardButton('🎬 Media', callback_data='nav_media'),
+        )
+    if is_owner_chat_id(user_id):
+        markup.add(InlineKeyboardButton('🔧 Maintenance', callback_data='nav_mw'))
     markup.add(InlineKeyboardButton('✖ Close', callback_data='menu_close'))
     return markup
 
 
-def _plex_markup():
+def _plex_markup(user_id):
     markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton('✅ Allow Plex', callback_data='plex_allow'),
-        InlineKeyboardButton('🧹 Remove Access', callback_data='plex_reset'),
-    )
+    row = [InlineKeyboardButton('✅ Allow Plex', callback_data='plex_allow')]
+    if is_owner_chat_id(user_id):
+        row.append(InlineKeyboardButton('🧹 Remove Access', callback_data='plex_reset'))
+    markup.add(*row)
+    markup.add(InlineKeyboardButton('📋 Status', callback_data='plex_status'))
     markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_home'))
     return markup
 
@@ -252,12 +218,13 @@ def _maintenance_markup():
     return markup
 
 
-def _plex_result_markup():
+def _plex_result_markup(user_id):
     markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton('✅ Allow Plex', callback_data='plex_allow'),
-        InlineKeyboardButton('🧹 Remove Access', callback_data='plex_reset'),
-    )
+    row = [InlineKeyboardButton('✅ Allow Plex', callback_data='plex_allow')]
+    if is_owner_chat_id(user_id):
+        row.append(InlineKeyboardButton('🧹 Remove Access', callback_data='plex_reset'))
+    markup.add(*row)
+    markup.add(InlineKeyboardButton('📋 Status', callback_data='plex_status'))
     markup.add(
         InlineKeyboardButton('⬅ Back', callback_data='nav_plex'),
         InlineKeyboardButton('🏠 Home', callback_data='nav_home'),
@@ -290,32 +257,37 @@ def _maintenance_result_markup():
 
 def _show_home_menu(chat_id, user_id=None, message_id=None):
     display_user_id = user_id if user_id is not None else chat_id
-    if is_auth_chat_id(display_user_id):
+    has_auth_access = is_auth_chat_id(display_user_id)
+    has_owner_access = is_owner_chat_id(display_user_id)
+    if has_auth_access or has_owner_access:
         id_line = f'<b>Your Telegram ID:</b> <code>{display_user_id}</code>\n\n'
+        body = '<b>Choose a section</b> to manage Plex, redownloads, or maintenance windows.'
     else:
         id_line = (
             f'<b>Your Telegram ID:</b> <code>{display_user_id}</code>\n'
             'Paste this into Seerr -> Notifications -> Telegram Chat ID.\n\n'
         )
+        body = 'Once your Telegram ID is added in Seerr, reopen /start to see available actions.'
     text = (
         '🤖 <b>MWBot</b>\n\n'
         + id_line
-        + '<b>Choose a section</b> to manage Plex, redownloads, or maintenance windows.'
+        + body
     )
     _show_menu(
         chat_id,
         text,
-        _home_markup(),
+        _home_markup(display_user_id),
         message_id=message_id,
     )
 
 
-def _show_plex_menu(chat_id, message_id=None):
+def _show_plex_menu(chat_id, user_id=None, message_id=None):
+    display_user_id = user_id if user_id is not None else chat_id
     _show_menu(
         chat_id,
         '📡 <b>Plex Access</b>\n'
         'Allow Plex from your current location or remove the temporary rule when you are done.',
-        _plex_markup(),
+        _plex_markup(display_user_id),
         message_id=message_id,
     )
 
@@ -343,11 +315,12 @@ def _show_maintenance_menu(chat_id, message_id=None):
     )
 
 
-def _show_plex_result(chat_id, text, message_id=None):
+def _show_plex_result(chat_id, text, user_id=None, message_id=None):
+    display_user_id = user_id if user_id is not None else chat_id
     _show_menu(
         chat_id,
         '📡 <b>Plex Access</b>\n' + escape(text),
-        _plex_result_markup(),
+        _plex_result_markup(display_user_id),
         message_id=message_id,
     )
 
@@ -413,55 +386,11 @@ def _stop_notified_mw():
     return result
 
 
-# ── /start ───────────────────────────────────────────────────────────
+# ── Menu entry points ────────────────────────────────────────────────
 
 @bot.message_handler(commands=['start'])
 def command_start(message):
     _show_home_menu(message.chat.id, user_id=_get_user_id(message))
-
-
-# ── /help ────────────────────────────────────────────────────────────
-
-def _build_help_text():
-    return '\n'.join([
-        '<b>MWBot</b>',
-        '',
-        'Use /start for the main menu.',
-        '',
-        '<b>Quick Paths</b>',
-        '/start — Open the main menu',
-        '/help — Show this help',
-        '',
-        '<b>Shortcuts</b>',
-        '/ip — Allow Plex from your current location',
-        '/redownload — Replace a bad release from Seerr',
-        '/mw — Open maintenance quick actions',
-    ])
-
-
-@bot.message_handler(commands=['help'])
-def command_help(message):
-    bot.send_message(
-        message.chat.id,
-        _build_help_text(),
-        parse_mode='HTML',
-    )
-
-
-@bot.message_handler(commands=['mw'])
-@safe_command
-@owner_only
-def command_mw_menu(message):
-    _show_maintenance_menu(message.chat.id)
-
-
-# ── /redownload ──────────────────────────────────────────────────────
-
-@bot.message_handler(commands=['redownload'])
-@safe_command
-@auth_user_only
-def command_redownload(message):
-    _start_redownload_flow(message.chat.id, _get_user_id(message))
 
 
 def _start_redownload_flow(chat_id, user_id, message_id=None):
@@ -520,15 +449,6 @@ def _start_redownload_flow(chat_id, user_id, message_id=None):
             )
 
 
-# ── /ip ──────────────────────────────────────────────────────────────
-
-@bot.message_handler(commands=['ip'])
-@safe_command
-@auth_user_only
-def command_allow_cdn(message):
-    _start_ip_flow(message.chat.id, _get_user_id(message))
-
-
 def _start_ip_flow(chat_id, user_id, message_id=None):
     _set_flow(chat_id, 'ip')
     bot.send_chat_action(chat_id, 'typing')
@@ -557,14 +477,6 @@ def _start_ip_flow(chat_id, user_id, message_id=None):
     register_owned_next_step(sent, ip, chat_id, user_id)
 
 
-@bot.message_handler(commands=['reset_ip'])
-@safe_command
-@owner_only
-def command_reset_cdn(message):
-    bot.send_chat_action(message.chat.id, 'typing')
-    result = disable_asn_to_firewall_rule()
-    bot.send_message(message.chat.id, text=result or 'Unable to update firewall rule.')
-
 def ip(message):
     if not _check_flow(message.chat.id, 'ip'):
         return
@@ -572,25 +484,31 @@ def ip(message):
     _clear_flow(message.chat.id)
 
     ip_address = message.text
+    user_id = _get_user_id(message)
     if not is_valid_ip(ip_address):
         if flow_message_id is not None:
-            _show_plex_result(message.chat.id, 'Invalid IP address format. Double-check it and try again.', message_id=flow_message_id)
+            _show_plex_result(
+                message.chat.id,
+                'Invalid IP address format. Double-check it and try again.',
+                user_id=user_id,
+                message_id=flow_message_id,
+            )
         else:
-            bot.send_message(message.chat.id, '❌ Invalid IP address format!\nDouble-check and rerun /ip')
+            bot.send_message(message.chat.id, '❌ Invalid IP address format!\nOpen Plex Access from /start and try again.')
     else:
         bot.send_chat_action(message.chat.id, 'typing')
         asn, error = get_asn_from_ip(ip_address)
         if asn is None:
             result_text = error or 'Unable to resolve ASN for this IP.'
             if flow_message_id is not None:
-                _show_plex_result(message.chat.id, result_text, message_id=flow_message_id)
+                _show_plex_result(message.chat.id, result_text, user_id=user_id, message_id=flow_message_id)
             else:
                 bot.send_message(message.chat.id, text=result_text)
         else:
             result = add_asn_to_firewall_rule(asn)
             result_text = result or 'Unable to update firewall rule.'
             if flow_message_id is not None:
-                _show_plex_result(message.chat.id, result_text, message_id=flow_message_id)
+                _show_plex_result(message.chat.id, result_text, user_id=user_id, message_id=flow_message_id)
             else:
                 bot.send_message(message.chat.id, text=result_text)
 
@@ -645,7 +563,7 @@ def _handle_nav_home(call):
 def _handle_nav_plex(call):
     if not _require_auth_callback(call):
         return
-    _show_plex_menu(call.message.chat.id, message_id=call.message.message_id)
+    _show_plex_menu(call.message.chat.id, user_id=call.from_user.id, message_id=call.message.message_id)
 
 
 def _handle_nav_media(call):
@@ -672,18 +590,31 @@ def _handle_plex_reset(call):
     chat_id = call.message.chat.id
     bot.send_chat_action(chat_id, 'typing')
     result = disable_asn_to_firewall_rule()
-    _show_plex_result(chat_id, result or 'Unable to update firewall rule.', message_id=call.message.message_id)
+    _show_plex_result(
+        chat_id,
+        result or 'Unable to update firewall rule.',
+        user_id=call.from_user.id,
+        message_id=call.message.message_id,
+    )
+
+
+def _handle_plex_status(call):
+    if not _require_auth_callback(call):
+        return
+    chat_id = call.message.chat.id
+    bot.send_chat_action(chat_id, 'typing')
+    _show_plex_result(
+        chat_id,
+        get_firewall_status_text(),
+        user_id=call.from_user.id,
+        message_id=call.message.message_id,
+    )
 
 
 def _handle_media_redownload(call):
     if not _require_auth_callback(call):
         return
     _start_redownload_flow(call.message.chat.id, call.from_user.id, message_id=call.message.message_id)
-
-
-def _handle_help(call):
-    bot.answer_callback_query(call.id)
-    bot.send_message(call.message.chat.id, _build_help_text(), parse_mode='HTML')
 
 
 def _handle_mw_action(call, result):
@@ -758,9 +689,9 @@ CALLBACK_HANDLERS = {
     'plex_allow': _handle_plex_allow,
     'cmd_ip': _handle_plex_allow,
     'plex_reset': _handle_plex_reset,
+    'plex_status': _handle_plex_status,
     'media_redownload': _handle_media_redownload,
     'cmd_redownload': _handle_media_redownload,
-    'cmd_help': _handle_help,
     'mw_start_silent': _handle_mw_start_silent,
     'mw_start_regular': _handle_mw_start_regular,
     'mw_reboot_default': _handle_mw_reboot_default,
@@ -821,7 +752,7 @@ def handle_callback(call):
         key = _pending_key(chat_id, user_id)
         target = _pending_redownloads.pop(key, None)
         if target is None:
-            bot.answer_callback_query(call.id, text='Session expired. Run /redownload again.')
+            bot.answer_callback_query(call.id, text='Session expired. Open Media from /start and try again.')
             return
         bot.answer_callback_query(call.id, text='Processing...')
         _show_menu(
@@ -844,7 +775,9 @@ def handle_callback(call):
 def command_unknown(message):
     command = str(message.text).split()[0]
     bot.reply_to(
-        message, "Sorry, {} command not found!\nUse /help to see available commands.".format(command))
+        message,
+        'Sorry, {} is not available.\nUse /start to open the menu.'.format(command),
+    )
 
 
 def main():

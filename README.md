@@ -1,17 +1,17 @@
 # MWBot
 
-MWBot is a Telegram bot designed to manage maintenance windows (MW) in Uptime Kuma and notify a specified Telegram chat. It allows authorized users to start and stop maintenance windows and perform other related tasks via Telegram commands.
+MWBot is a Telegram bot designed to manage maintenance windows (MW) in Uptime Kuma and notify a specified Telegram chat. It uses a menu-first Telegram flow, with `/start` opening the inline button menu for all supported actions.
 
 ## Features
 
 - Start and stop maintenance windows in Uptime Kuma.
-- Manage maintenance windows from the `/mw` menu with quick actions for silent, regular, reboot, and firmware flows.
+- Manage maintenance windows from the `/start` menu with quick actions for silent, regular, reboot, and firmware flows.
 - Auto-stop timed maintenance windows and clean up the notification message when the window completes successfully.
 - Notify a dedicated Telegram channel about maintenance activities.
 - Support a separate notification chat for testing via environment variable override.
 - Manage IP addresses for access control.
 - Authenticate users based on Telegram chat IDs.
-- Interactive `/redownload` workflow for Seerr issue, movie, or series URLs that blocklists bad Sonarr/Radarr releases.
+- Interactive redownload workflow from the Media menu for Seerr issue, movie, or series URLs that blocklists bad Sonarr/Radarr releases.
 
 ## Docker Compose Setup
 
@@ -84,24 +84,24 @@ services:
 
 ## Usage
 
-1. **Start the Bot**: Use the `/start` command to initialize the bot.
-2. **Help**: Use the `/help` command to list all available commands.
-3. **Manage Maintenance Windows**:
-   - Use `/mw` to open the maintenance menu.
+1. **Open the Bot**: Use `/start` to open the main menu.
+2. **Manage Maintenance Windows**:
+   - Open the Maintenance section from the menu.
    - Use the inline buttons for silent start, regular start, reboot 5m, firmware 5m, silent stop, stop + notify, and status.
-4. **IP Management**: Use `/ip` to allow a new IP address and `/reset_ip` to reset IP access.
-5. **Redownload Control**: Use `/redownload` and follow the prompts with a Seerr issue, movie, or series URL. The bot confirms the target, then blocklists the matching release in Sonarr or Radarr so it is not downloaded again.
+3. **Plex Access**: Open the Plex Access section to allow your current location, remove access, or check status.
+4. **Redownload Control**: Open the Media section and follow the prompts. The bot confirms the target, then blocklists the matching release in Sonarr or Radarr so it is not downloaded again.
 
 ## How Redownload Works
 
-1. Send `/redownload` in Telegram.
-2. The bot asks for a Seerr URL such as `https://seerr.example.com/issues/29`, `https://seerr.example.com/movie/1220564`, or `https://seerr.example.com/tv/1408`.
-3. If you send a movie or series URL, the bot looks up the most recent matching Seerr issue automatically, then resolves the target media plus whether it belongs to the standard or 4K arr instance.
-4. The bot shows a confirmation message with the selected backend: `Radarr`, `Radarr4k`, `Sonarr`, or `Sonarr4k`.
-5. After you confirm in Telegram, the bot tries to stop future grabs in this order:
-   - remove a matching queued release with `blocklist=true` and `skipRedownload=true`
-   - if nothing is queued, mark the best matching history item as failed
-6. For history fallback, the bot prefers `grabbed` records before `downloadFolderImported` records so the blocklist entry is created against the actual grabbed release.
+1. Send `/start` in Telegram.
+2. Open the Media section and choose the redownload action.
+3. The bot asks for a Seerr URL such as `https://seerr.example.com/issues/29`, `https://seerr.example.com/movie/1220564`, or `https://seerr.example.com/tv/1408`.
+4. If you send a movie or series URL, the bot looks up the most recent matching Seerr issue automatically, then resolves the target media plus whether it belongs to the standard or 4K arr instance.
+5. The bot shows a confirmation message with the selected backend: `Radarr`, `Radarr4k`, `Sonarr`, or `Sonarr4k`.
+6. After you confirm in Telegram, the bot tries to stop future grabs in this order:
+    - remove a matching queued release with `blocklist=true` and `skipRedownload=true`
+    - if nothing is queued, mark the best matching history item as failed
+7. For history fallback, the bot prefers `grabbed` records before `downloadFolderImported` records so the blocklist entry is created against the actual grabbed release.
 
 ## Deployment Notes
 

@@ -7,6 +7,7 @@ from modules.firewall import (
     add_asn_to_firewall_rule,
     convert_to_local_time,
     disable_asn_to_firewall_rule,
+    get_firewall_status_text,
     get_asn_from_ip,
     get_asns_from_firewall_rule,
     get_next_firewall_run,
@@ -61,21 +62,11 @@ from modules.redownload import (
 
 DEFAULT_COMMANDS = {
     'start': 'Open main menu',
-    'help': 'Show help',
 }
 
-AUTH_COMMANDS = {
-    'start': 'Open main menu',
-    'ip': 'Allow Plex in unknown place',
-    'redownload': 'Blacklist issue release and prevent re-download',
-    'help': 'Show help',
-}
+AUTH_COMMANDS = dict(DEFAULT_COMMANDS)
 
-OWNER_COMMANDS = {
-    **AUTH_COMMANDS,
-    'reset_ip': 'Disable Plex in unknown place',
-    'mw': 'Open maintenance quick actions',
-}
+OWNER_COMMANDS = dict(DEFAULT_COMMANDS)
 
 COMMANDS = OWNER_COMMANDS
 
@@ -186,7 +177,52 @@ def get_seerr_access_cache():
     return _seerr_access_cache
 
 
+def _apply_access_test_override():
+    test_user_id = cfg.SEERR_ACCESS_TEST_USER_ID
+    test_mode = cfg.SEERR_ACCESS_TEST_MODE
+    if test_user_id is None or test_mode in ('', 'normal'):
+        return
+
+    authorized_chat_ids = set(_seerr_access_cache.get('authorized_chat_ids') or set())
+    owner_chat_ids = set(_seerr_access_cache.get('owner_chat_ids') or set())
+
+    owner_chat_ids.discard(test_user_id)
+
+    if test_mode == 'owner':
+        authorized_chat_ids.add(test_user_id)
+        owner_chat_ids.add(test_user_id)
+    elif test_mode == 'authorized':
+        authorized_chat_ids.add(test_user_id)
+    elif test_mode == 'unauthorized':
+        authorized_chat_ids.discard(test_user_id)
+    else:
+        logging.warning('Ignoring invalid SEERR_ACCESS_TEST_MODE value: %s', test_mode)
+        return
+
+    _seerr_access_cache.update({
+        'authorized_chat_ids': authorized_chat_ids,
+        'owner_chat_ids': owner_chat_ids,
+        'loaded': True,
+    })
+    logging.info('Applied Seerr access test override for Telegram ID %s: %s', test_user_id, test_mode)
+
+
 def warm_seerr_access_cache():
+    if cfg.SEERR_ACCESS_ENV_ONLY:
+        _seerr_access_cache.update({
+            'authorized_chat_ids': set(_get_env_authorized_chat_ids()),
+            'owner_chat_ids': set(_get_env_owner_chat_ids()),
+            'loaded': True,
+        })
+        _apply_access_test_override()
+        cache = get_seerr_access_cache()
+        logging.info(
+            'Seerr Telegram access cache forced to env-only mode: %s authorized, %s owners',
+            len(cache['authorized_chat_ids']),
+            len(cache['owner_chat_ids']),
+        )
+        return cache
+
     try:
         _refresh_seerr_access_cache()
     except Exception as exc:
@@ -197,6 +233,7 @@ def warm_seerr_access_cache():
             'loaded': True,
         })
 
+    _apply_access_test_override()
     cache = get_seerr_access_cache()
     logging.info(
         'Seerr Telegram access cache ready: %s authorized, %s owners',

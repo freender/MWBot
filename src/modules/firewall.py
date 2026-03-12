@@ -26,13 +26,13 @@ def get_asn_from_ip(ip):
         payload = response.json()
         as_field = payload.get('as') or ''
         if not as_field.startswith('AS'):
-            return None, 'ASN for this IP is not found!\nDoublecheck and rerun /ip command'
+            return None, 'ASN for this IP is not found. Double-check it from the Plex menu and try again.'
         asn = as_field.removeprefix('AS').split()[0]
         if not asn.isdigit():
-            return None, 'ASN for this IP is not found!\nDoublecheck and rerun /ip command'
+            return None, 'ASN for this IP is not found. Double-check it from the Plex menu and try again.'
         return asn, None
     except requests.exceptions.RequestException as exc:
-        result = 'ASN for this IP is not found!\nDoublecheck and rerun /ip command'
+        result = 'ASN for this IP is not found. Double-check it from the Plex menu and try again.'
         logging.error('%s: %s', result, exc)
         return None, result
 
@@ -147,6 +147,29 @@ def get_rule_status():
         logging.error(result)
         return None, result
     return enabled, None
+
+
+def get_firewall_status_text():
+    enabled, error = get_rule_status()
+    if enabled is None:
+        result = f'Unable to retrieve Plex access status: {error}'
+        logging.error(result)
+        return result
+
+    if not enabled:
+        return 'Plex access is disabled.'
+
+    asns, error = get_asns_from_firewall_rule()
+    if asns is None:
+        result = f'Unable to retrieve Plex access details: {error}'
+        logging.error(result)
+        return result
+
+    temporary_asns = [asn for asn in asns if str(asn) != str(cfg.MW_BOT_ASN_DEFAULT)]
+    if not temporary_asns:
+        return 'Plex access is enabled.'
+
+    return f'Plex access is enabled. Temporary ASNs: {", ".join(temporary_asns)}.'
 
 
 def get_rule_modify_date():

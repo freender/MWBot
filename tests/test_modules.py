@@ -99,16 +99,16 @@ class ModulesTest(unittest.TestCase):
         self.assertIsNone(duration)
         self.assertIn('Invalid duration', error)
 
-    def test_command_metadata_includes_maintenance_menu_and_short_defaults(self):
-        self.assertIn('mw', self.modules.COMMANDS)
-        self.assertEqual(self.modules.COMMANDS['start'], 'Open main menu')
-        self.assertEqual(self.modules.COMMANDS['mw'], 'Open maintenance quick actions')
-        self.assertEqual(self.modules.COMMANDS['help'], 'Show help')
-        self.assertNotIn('mw', self.modules.AUTH_COMMANDS)
-        self.assertNotIn('reset_ip', self.modules.AUTH_COMMANDS)
-        self.assertEqual(set(self.modules.DEFAULT_COMMANDS), {'start', 'help'})
-        self.assertNotIn('firmware_mw', self.modules.COMMANDS)
-        self.assertNotIn('reboot_mw', self.modules.COMMANDS)
+    def test_command_metadata_exposes_menu_only_entrypoint(self):
+        self.assertEqual(self.modules.DEFAULT_COMMANDS, {'start': 'Open main menu'})
+        self.assertEqual(self.modules.AUTH_COMMANDS, {'start': 'Open main menu'})
+        self.assertEqual(self.modules.OWNER_COMMANDS, {'start': 'Open main menu'})
+        self.assertEqual(self.modules.COMMANDS, {'start': 'Open main menu'})
+        self.assertNotIn('mw', self.modules.DEFAULT_COMMANDS)
+        self.assertNotIn('help', self.modules.DEFAULT_COMMANDS)
+        self.assertNotIn('ip', self.modules.AUTH_COMMANDS)
+        self.assertNotIn('redownload', self.modules.AUTH_COMMANDS)
+        self.assertNotIn('reset_ip', self.modules.OWNER_COMMANDS)
 
     def test_register_bot_commands_uses_default_auth_and_owner_scopes(self):
         bot = mock.Mock()
@@ -124,14 +124,14 @@ class ModulesTest(unittest.TestCase):
         default_call = bot.set_my_commands.call_args_list[0]
         self.assertEqual(
             [command.command for command in default_call.args[0]],
-            ['start', 'help'],
+            ['start'],
         )
         self.assertEqual(default_call.kwargs['scope'].type, 'default')
 
         auth_call = bot.set_my_commands.call_args_list[1]
         self.assertEqual(
             [command.command for command in auth_call.args[0]],
-            ['start', 'ip', 'redownload', 'help'],
+            ['start'],
         )
         self.assertEqual(auth_call.kwargs['scope'].type, 'chat')
         self.assertEqual(auth_call.kwargs['scope'].chat_id, 2)
@@ -139,7 +139,7 @@ class ModulesTest(unittest.TestCase):
         owner_call = bot.set_my_commands.call_args_list[2]
         self.assertEqual(
             [command.command for command in owner_call.args[0]],
-            ['start', 'ip', 'redownload', 'help', 'reset_ip', 'mw'],
+            ['start'],
         )
         self.assertEqual(owner_call.kwargs['scope'].type, 'chat')
         self.assertEqual(owner_call.kwargs['scope'].chat_id, 3)
@@ -545,6 +545,58 @@ class ModulesTest(unittest.TestCase):
         self.assertTrue(self.modules.is_owner(owner_message))
         self.assertFalse(self.modules.is_owner(user_message))
 
+    def test_warm_seerr_access_cache_can_be_forced_to_env_only(self):
+        message = mock.Mock(
+            chat=mock.Mock(id=2),
+            from_user=mock.Mock(id=2),
+        )
+
+        with mock.patch.object(self.cfg, 'SEERR_ACCESS_ENV_ONLY', True, create=True):
+            with mock.patch.object(self.modules, 'request_json') as request_json:
+                cache = self.modules.warm_seerr_access_cache()
+
+        self.assertTrue(cache['loaded'])
+        self.assertTrue(self.modules.is_auth_user(message))
+        request_json.assert_not_called()
+
+    def test_warm_seerr_access_cache_can_force_owner_to_authorized_only(self):
+        payload = {'results': [{'id': 1}, {'id': 3}], 'pageInfo': {'results': 2}}
+        settings = [
+            {'telegramChatId': '733172269'},
+            {'telegramChatId': '987654321'},
+        ]
+        owner_message = mock.Mock(
+            chat=mock.Mock(id=100),
+            from_user=mock.Mock(id=733172269),
+        )
+
+        with mock.patch.object(self.cfg, 'SEERR_ACCESS_TEST_USER_ID', 733172269, create=True):
+            with mock.patch.object(self.cfg, 'SEERR_ACCESS_TEST_MODE', 'authorized', create=True):
+                with mock.patch.object(self.modules, 'request_json', side_effect=[payload] + settings):
+                    self.modules.warm_seerr_access_cache()
+
+        self.assertTrue(self.modules.is_auth_user(owner_message))
+        self.assertFalse(self.modules.is_owner(owner_message))
+
+    def test_warm_seerr_access_cache_can_force_user_to_unauthorized(self):
+        payload = {'results': [{'id': 1}, {'id': 3}], 'pageInfo': {'results': 2}}
+        settings = [
+            {'telegramChatId': '733172269'},
+            {'telegramChatId': '987654321'},
+        ]
+        user_message = mock.Mock(
+            chat=mock.Mock(id=100),
+            from_user=mock.Mock(id=987654321),
+        )
+
+        with mock.patch.object(self.cfg, 'SEERR_ACCESS_TEST_USER_ID', 987654321, create=True):
+            with mock.patch.object(self.cfg, 'SEERR_ACCESS_TEST_MODE', 'unauthorized', create=True):
+                with mock.patch.object(self.modules, 'request_json', side_effect=[payload] + settings):
+                    self.modules.warm_seerr_access_cache()
+
+        self.assertFalse(self.modules.is_auth_user(user_message))
+        self.assertFalse(self.modules.is_owner(user_message))
+
     def test_warm_seerr_access_cache_falls_back_to_env(self):
         payload = {'results': [{'id': 1}], 'pageInfo': {'results': 1}}
         message = mock.Mock(
@@ -652,6 +704,21 @@ class ModulesTest(unittest.TestCase):
 
         self.assertTrue(enabled)
         self.assertIsNone(error)
+
+    def test_get_firewall_status_text_returns_disabled_when_rule_off(self):
+        with mock.patch.object(self.firewall, 'get_rule_status', return_value=(False, None)):
+            with mock.patch.object(self.firewall, 'get_asns_from_firewall_rule') as get_asns:
+                status = self.modules.get_firewall_status_text()
+
+        self.assertEqual(status, 'Plex access is disabled.')
+        get_asns.assert_not_called()
+
+    def test_get_firewall_status_text_lists_temporary_asns(self):
+        with mock.patch.object(self.firewall, 'get_rule_status', return_value=(True, None)):
+            with mock.patch.object(self.firewall, 'get_asns_from_firewall_rule', return_value=(['1234', '7922'], None)):
+                status = self.modules.get_firewall_status_text()
+
+        self.assertEqual(status, 'Plex access is enabled. Temporary ASNs: 7922.')
 
     def test_get_asn_from_ip_parses_json_response(self):
         response = mock.Mock()
