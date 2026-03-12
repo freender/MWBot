@@ -155,6 +155,8 @@ def _show_menu(chat_id, text, reply_markup, message_id=None):
             )
             return message_id
         except Exception as exc:
+            if 'message is not modified' in str(exc).lower():
+                return message_id
             logging.warning('Unable to update menu message %s in chat %s: %s', message_id, chat_id, exc)
 
     sent = bot.send_message(

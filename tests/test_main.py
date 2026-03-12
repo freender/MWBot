@@ -176,6 +176,28 @@ class MainAuthTest(unittest.TestCase):
         show_menu.assert_called_once()
         self.assertEqual(self.main._home_menu_messages[10], 77)
 
+    def test_show_menu_ignores_not_modified_error(self):
+        markup = mock.Mock()
+
+        with mock.patch.object(self.main.bot, 'edit_message_text', side_effect=Exception('Bad Request: message is not modified')) as edit_message_text, \
+             mock.patch.object(self.main.bot, 'send_message') as send_message:
+            message_id = self.main._show_menu(100, 'same text', markup, message_id=55)
+
+        edit_message_text.assert_called_once()
+        send_message.assert_not_called()
+        self.assertEqual(message_id, 55)
+
+    def test_show_menu_sends_new_message_after_edit_failure(self):
+        markup = mock.Mock()
+
+        with mock.patch.object(self.main.bot, 'edit_message_text', side_effect=Exception('boom')) as edit_message_text, \
+             mock.patch.object(self.main.bot, 'send_message', return_value=mock.Mock(message_id=88)) as send_message:
+            message_id = self.main._show_menu(100, 'new text', markup, message_id=55)
+
+        edit_message_text.assert_called_once()
+        send_message.assert_called_once()
+        self.assertEqual(message_id, 88)
+
     def test_start_replaces_previous_home_menu_message(self):
         message = mock.Mock(chat=mock.Mock(id=100), from_user=mock.Mock(id=20))
         self.main._home_menu_messages[100] = 44
