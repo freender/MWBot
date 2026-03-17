@@ -16,6 +16,9 @@ import cfg
 STATE_FILE = '/config/mw_state.json'
 STATE_LOCK = threading.Lock()
 
+KUMA_TIMEOUT = 3
+KUMA_MAX_ATTEMPTS = 2
+
 
 def parse_duration(text):
     if not text:
@@ -138,32 +141,34 @@ def get_mw_status_text(state=None):
 
 
 def _run_kuma_maintenance_action(action_name, success_message, failure_message):
-    try:
-        api = UptimeKumaApi(cfg.KUMA_HOST)
+    last_error = None
+    for attempt in range(1, KUMA_MAX_ATTEMPTS + 1):
         try:
-            api.login(cfg.KUMA_LOGIN, cfg.KUMA_PASSWORD)
-            getattr(api, action_name)(cfg.KUMA_MW_ID)
-            return success_message
-        except socketio.exceptions.TimeoutError:
-            result = '⏱️ Timeout connecting to Uptime Kuma. Service may be slow or unreachable.'
-            logging.error(result)
-            return result
-        except UptimeKumaException as exc:
-            logging.error('%s: %s', failure_message, exc)
-            return failure_message
-        finally:
+            api = UptimeKumaApi(cfg.KUMA_HOST, timeout=KUMA_TIMEOUT)
             try:
-                api.disconnect()
-            except Exception as exc:
-                logging.error('Error while disconnecting: %s', exc)
-    except socketio.exceptions.TimeoutError:
-        result = '⏱️ Timeout connecting to Uptime Kuma. Service may be unreachable.'
-        logging.error(result)
-        return result
-    except Exception as exc:
-        result = 'Unable to establish connection to Uptime Kuma'
-        logging.error('%s: %s', result, exc)
-        return result
+                api.login(cfg.KUMA_LOGIN, cfg.KUMA_PASSWORD)
+                getattr(api, action_name)(cfg.KUMA_MW_ID)
+                return success_message
+            except socketio.exceptions.TimeoutError:
+                last_error = '⏱️ Timeout connecting to Uptime Kuma. Service may be slow or unreachable.'
+                logging.warning('%s (attempt %d/%d)', last_error, attempt, KUMA_MAX_ATTEMPTS)
+            except UptimeKumaException as exc:
+                logging.error('%s: %s', failure_message, exc)
+                return failure_message
+            finally:
+                try:
+                    api.disconnect()
+                except Exception as exc:
+                    logging.error('Error while disconnecting: %s', exc)
+        except socketio.exceptions.TimeoutError:
+            last_error = '⏱️ Timeout connecting to Uptime Kuma. Service may be unreachable.'
+            logging.warning('%s (attempt %d/%d)', last_error, attempt, KUMA_MAX_ATTEMPTS)
+        except Exception as exc:
+            result = 'Unable to establish connection to Uptime Kuma'
+            logging.error('%s: %s', result, exc)
+            return result
+    logging.error('All %d Kuma attempts failed', KUMA_MAX_ATTEMPTS)
+    return last_error
 
 
 def start_mw():
@@ -190,7 +195,7 @@ def stop_timed_mw(bot, notify_on_success=False):
         clear_mw_state()
         logging.info('Timed MW cleanup completed successfully')
         if notify_on_success and state.get('notify_chat_id'):
-            bot.send_message(state['notify_chat_id'], 'Timed maintenance window has been completed.')
+            bot.send_message(state['notify_chat_id'], '✅ NAS: Server Status\nTimed maintenance window has been completed')
     elif state:
         logging.warning('Timed MW cleanup failed: %s', result)
     return result, success
@@ -210,5 +215,5 @@ def maintain_timed_mw(bot, poll_interval=30):
                 )
                 result, success = stop_timed_mw(bot)
                 if not success and state.get('notify_chat_id'):
-                    bot.send_message(state['notify_chat_id'], f'Timed maintenance cleanup failed: {result}')
+                    bot.send_message(state['notify_chat_id'], f'⚠️ NAS: Server Status\nTimed maintenance cleanup failed: {result}')
         time.sleep(poll_interval)

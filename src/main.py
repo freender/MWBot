@@ -405,7 +405,7 @@ def _stop_silent_mw():
 def _stop_notified_mw():
     result, success = stop_timed_mw(bot)
     if success:
-        bot.send_message(chat_id=cfg.NOTIFY_CHAT_ID, text='NAS: Server Status \nMaintenance window has been completed')
+        bot.send_message(chat_id=cfg.NOTIFY_CHAT_ID, text='✅ NAS: Server Status\nMaintenance window has been completed')
         return result + '. Sev1 chat has been notified'
     return result
 
@@ -664,7 +664,7 @@ def _handle_mw_start_regular(call):
     if not _require_owner_callback(call):
         return
     bot.send_chat_action(call.message.chat.id, 'typing')
-    _handle_mw_action(call, _start_notified_mw('NAS: Server Status \nMaintenance window has been started.  \nThis may take awhile'))
+    _handle_mw_action(call, _start_notified_mw('🔴 NAS: Server Status\nMaintenance window has been started.\nThis may take awhile'))
 
 
 def _handle_mw_reboot_default(call):
@@ -672,7 +672,7 @@ def _handle_mw_reboot_default(call):
         return
     bot.send_chat_action(call.message.chat.id, 'typing')
     _handle_mw_action(call, _start_notified_mw(
-        'NAS: Server Status \nNAS is going to be rebooted. \nETA - 5 minutes',
+        '🔴 NAS: Server Status\nNAS is going to be rebooted.\nETA ~ 5 minutes',
         default_duration=DEFAULT_REBOOT_MW_DURATION,
         reason='Reboot maintenance',
     ))
@@ -683,7 +683,7 @@ def _handle_mw_firmware_default(call):
         return
     bot.send_chat_action(call.message.chat.id, 'typing')
     _handle_mw_action(call, _start_notified_mw(
-        'NAS: Server Status \nFirmware update. \nETA - 5 minutes',
+        '🔴 NAS: Server Status\nFirmware update.\nETA ~ 5 minutes',
         default_duration=DEFAULT_FIRMWARE_MW_DURATION,
         reason='Firmware maintenance',
     ))

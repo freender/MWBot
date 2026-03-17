@@ -681,7 +681,7 @@ class ModulesTest(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     self.modules.maintain_timed_mw(bot, poll_interval=0)
 
-        self.assertEqual(bot.sent, [('200', 'Timed maintenance cleanup failed: boom')])
+        self.assertEqual(bot.sent, [('200', '⚠️ NAS: Server Status\nTimed maintenance cleanup failed: boom')])
 
     def test_is_valid_ip_uses_stdlib_parser(self):
         self.assertTrue(self.modules.is_valid_ip('127.0.0.1'))
