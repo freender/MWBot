@@ -1,6 +1,7 @@
 import telebot
 import cfg
 import logging
+import signal
 import threading
 from datetime import timedelta
 from html import escape
@@ -36,6 +37,7 @@ from modules import (
 logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
 
 bot = telebot.TeleBot(cfg.TOKEN)
+shutdown_event = threading.Event()
 
 DEFAULT_REBOOT_MW_DURATION = timedelta(minutes=5)
 DEFAULT_FIRMWARE_MW_DURATION = timedelta(minutes=5)
@@ -52,11 +54,19 @@ _home_menu_messages = {}
 
 
 def start_background_threads(active_bot):
-    scheduler_thread = threading.Thread(target=schedule_fw_task, daemon=True)
+    scheduler_thread = threading.Thread(target=schedule_fw_task, args=(shutdown_event,), daemon=True)
     scheduler_thread.start()
 
-    timed_mw_thread = threading.Thread(target=maintain_timed_mw, args=(active_bot,), daemon=True)
+    timed_mw_thread = threading.Thread(target=maintain_timed_mw, args=(active_bot,), kwargs={'shutdown_event': shutdown_event}, daemon=True)
     timed_mw_thread.start()
+
+
+def handle_shutdown(signum, _frame):
+    logging.info('Received signal %s; stopping bot', signum)
+    shutdown_event.set()
+    stop_polling = getattr(bot, 'stop_polling', None)
+    if stop_polling is not None:
+        stop_polling()
 
 
 def is_same_chat_user(message, expected_chat_id, expected_user_id):
@@ -813,6 +823,8 @@ def command_unknown(message):
 
 
 def main():
+    signal.signal(signal.SIGTERM, handle_shutdown)
+    signal.signal(signal.SIGINT, handle_shutdown)
     warm_seerr_access_cache()
     register_bot_commands(bot)
     start_background_threads(bot)

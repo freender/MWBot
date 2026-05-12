@@ -202,14 +202,17 @@ def get_next_firewall_run(current_time):
     return next_run
 
 
-def schedule_fw_task():
-    while True:
+def schedule_fw_task(shutdown_event=None):
+    while shutdown_event is None or not shutdown_event.is_set():
         current_time = datetime.now(ZoneInfo(cfg.TZ))
         next_run = get_next_firewall_run(current_time)
         delay = (next_run - current_time).total_seconds()
 
         logging.info('[%s] Next run scheduled at %s (in %s seconds)', current_time, next_run, delay)
-        time.sleep(delay)
+        if shutdown_event is not None and shutdown_event.wait(delay):
+            break
+        if shutdown_event is None:
+            time.sleep(delay)
 
         status, error = get_rule_status()
         if status is None:

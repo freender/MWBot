@@ -201,8 +201,8 @@ def stop_timed_mw(bot, notify_on_success=False):
     return result, success
 
 
-def maintain_timed_mw(bot, poll_interval=30):
-    while True:
+def maintain_timed_mw(bot, poll_interval=30, shutdown_event=None):
+    while shutdown_event is None or not shutdown_event.is_set():
         state = load_mw_state()
         if state:
             expires_at = datetime.fromisoformat(state['expires_at'])
@@ -216,4 +216,7 @@ def maintain_timed_mw(bot, poll_interval=30):
                 result, success = stop_timed_mw(bot)
                 if not success and state.get('notify_chat_id'):
                     bot.send_message(state['notify_chat_id'], f'⚠️ NAS: Server Status\nTimed maintenance cleanup failed: {result}')
-        time.sleep(poll_interval)
+        if shutdown_event is not None:
+            shutdown_event.wait(poll_interval)
+        else:
+            time.sleep(poll_interval)
