@@ -1,5 +1,6 @@
 import os
 import json
+from datetime import timedelta
 
 
 def _require_env(name):
@@ -49,6 +50,19 @@ def _get_bool(name, default=False):
     return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
 
 
+def _get_duration(name, default):
+    value = _get_optional(name, default).strip().lower()
+    if len(value) < 2:
+        raise RuntimeError(f'Environment variable {name} must use a duration like 30m or 12h.')
+    amount = value[:-1]
+    unit = value[-1]
+    if not amount.isdigit() or unit not in ('m', 'h'):
+        raise RuntimeError(f'Environment variable {name} must use a duration like 30m or 12h.')
+    if unit == 'm':
+        return timedelta(minutes=int(amount))
+    return timedelta(hours=int(amount))
+
+
 TOKEN = _require_env('TOKEN')
 CHAT_ID = _require_env('CHAT_ID')
 NOTIFY_CHAT_ID = os.getenv('NOTIFY_CHAT_ID', CHAT_ID)
@@ -91,5 +105,6 @@ ALERTMANAGER_URL = _get_optional('ALERTMANAGER_URL')
 ALERTMANAGER_MW_MATCHERS = _get_json('ALERTMANAGER_MW_MATCHERS') if os.getenv('ALERTMANAGER_MW_MATCHERS') else [
     {'name': 'alertname', 'value': '.*', 'isRegex': True, 'isEqual': True},
 ]
+ALERTMANAGER_OPEN_MW_DURATION = _get_duration('ALERTMANAGER_OPEN_MW_DURATION', '12h')
 _raw_backends = _get_optional('MAINTENANCE_BACKENDS', 'kuma')
 MAINTENANCE_BACKENDS = {b.strip().lower() for b in _raw_backends.split(',') if b.strip()}

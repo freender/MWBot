@@ -119,7 +119,7 @@ def clear_mw_state():
 
 
 def build_mw_state(duration, notify_chat_id=None, notify_message_id=None, reason=None,
-                   alertmanager_silence_id=None):
+                   alertmanager_silence_id=None, auto_stop=True):
     expires_at = datetime.now(ZoneInfo(cfg.TZ)) + duration
     return {
         'expires_at': expires_at.isoformat(),
@@ -128,6 +128,7 @@ def build_mw_state(duration, notify_chat_id=None, notify_message_id=None, reason
         'notify_message_id': notify_message_id,
         'reason': reason,
         'alertmanager_silence_id': alertmanager_silence_id,
+        'auto_stop': auto_stop,
     }
 
 
@@ -139,10 +140,16 @@ def get_mw_status_text(state=None):
     expires_at = datetime.fromisoformat(active_state['expires_at'])
     now = datetime.now(ZoneInfo(cfg.TZ))
     remaining = expires_at - now
-    if remaining.total_seconds() <= 0:
+    if remaining.total_seconds() <= 0 and active_state.get('auto_stop', True):
         return 'Timed maintenance window has expired and is waiting for cleanup.'
 
     reason = active_state.get('reason') or 'Maintenance window'
+    if not active_state.get('auto_stop', True):
+        return (
+            f'{reason} is active.\n'
+            f"Alertmanager silence safety expiry: {expires_at.strftime('%Y-%m-%d %H:%M %Z')}\n"
+            'Auto-stop: disabled; use Stop to complete maintenance.'
+        )
     return (
         f'{reason} is active.\n'
         f"Ends at {expires_at.strftime('%Y-%m-%d %H:%M %Z')}\n"
@@ -247,7 +254,7 @@ def stop_timed_mw(bot, notify_on_success=False):
 def maintain_timed_mw(bot, poll_interval=30, shutdown_event=None):
     while shutdown_event is None or not shutdown_event.is_set():
         state = load_mw_state()
-        if state:
+        if state and state.get('auto_stop', True):
             expires_at = datetime.fromisoformat(state['expires_at'])
             now = datetime.now(ZoneInfo(cfg.TZ))
             if expires_at <= now:

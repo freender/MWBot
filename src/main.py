@@ -380,12 +380,17 @@ def _show_maintenance_result(chat_id, text, message_id=None):
 
 def _start_silent_mw(duration=None, default_duration=None, reason='Silent maintenance window'):
     selected_duration = duration if duration is not None else default_duration
+    silence_duration = selected_duration or cfg.ALERTMANAGER_OPEN_MW_DURATION
     result = start_mw()
+    if result == 'MW has been started':
+        silence_id = create_am_silence(silence_duration, reason=reason)
+        replace_mw_state(bot, build_mw_state(silence_duration, reason=reason,
+                                              alertmanager_silence_id=silence_id,
+                                              auto_stop=selected_duration is not None))
     if result == 'MW has been started' and selected_duration is not None:
-        silence_id = create_am_silence(selected_duration, reason=reason)
-        replace_mw_state(bot, build_mw_state(selected_duration, reason=reason,
-                                              alertmanager_silence_id=silence_id))
         return f'{result}. Timed stop scheduled in {format_duration(selected_duration)}.'
+    if result == 'MW has been started' and silence_id:
+        return f'{result}. Alertmanager silence created for {format_duration(silence_duration)}; use Stop to complete MW.'
     return result
 
 
