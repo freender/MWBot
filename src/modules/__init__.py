@@ -19,7 +19,9 @@ from modules.firewall import (
 from modules.maintenance import (
     build_mw_state,
     clear_mw_state,
+    create_am_silence,
     delete_message,
+    expire_am_silence,
     format_duration,
     get_mw_status_text,
     load_mw_state,

@@ -13,6 +13,7 @@ from modules import (
     build_issue_label,
     build_mw_state,
     build_redownload_confirmation,
+    create_am_silence,
     disable_asn_to_firewall_rule,
     execute_redownload,
     format_duration,
@@ -381,7 +382,9 @@ def _start_silent_mw(duration=None, default_duration=None, reason='Silent mainte
     selected_duration = duration if duration is not None else default_duration
     result = start_mw()
     if result == 'MW has been started' and selected_duration is not None:
-        replace_mw_state(bot, build_mw_state(selected_duration, reason=reason))
+        silence_id = create_am_silence(selected_duration, reason=reason)
+        replace_mw_state(bot, build_mw_state(selected_duration, reason=reason,
+                                              alertmanager_silence_id=silence_id))
         return f'{result}. Timed stop scheduled in {format_duration(selected_duration)}.'
     return result
 
@@ -397,11 +400,13 @@ def _start_notified_mw(notification_text, duration=None, default_duration=None, 
     if selected_duration is None:
         return status
 
+    silence_id = create_am_silence(selected_duration, reason=reason)
     state = build_mw_state(
         selected_duration,
         notify_chat_id=cfg.NOTIFY_CHAT_ID,
         notify_message_id=notify_message.message_id,
         reason=reason,
+        alertmanager_silence_id=silence_id,
     )
     replace_mw_state(bot, state)
     return f'{status}. Timed stop scheduled in {format_duration(selected_duration)}.'

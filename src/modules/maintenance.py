@@ -20,6 +20,14 @@ KUMA_TIMEOUT = 3
 KUMA_MAX_ATTEMPTS = 2
 
 
+def _kuma_backend_enabled():
+    return 'kuma' in cfg.MAINTENANCE_BACKENDS
+
+
+def _am_backend_enabled():
+    return bool(cfg.ALERTMANAGER_URL) and 'alertmanager' in cfg.MAINTENANCE_BACKENDS
+
+
 def parse_duration(text):
     if not text:
         return None, None
@@ -110,7 +118,8 @@ def clear_mw_state():
             logging.error('Unable to clear MW state: %s', exc)
 
 
-def build_mw_state(duration, notify_chat_id=None, notify_message_id=None, reason=None):
+def build_mw_state(duration, notify_chat_id=None, notify_message_id=None, reason=None,
+                   alertmanager_silence_id=None):
     expires_at = datetime.now(ZoneInfo(cfg.TZ)) + duration
     return {
         'expires_at': expires_at.isoformat(),
@@ -118,6 +127,7 @@ def build_mw_state(duration, notify_chat_id=None, notify_message_id=None, reason
         'notify_chat_id': notify_chat_id,
         'notify_message_id': notify_message_id,
         'reason': reason,
+        'alertmanager_silence_id': alertmanager_silence_id,
     }
 
 
@@ -179,6 +189,28 @@ def stop_mw():
     return _run_kuma_maintenance_action('pause_maintenance', 'MW has been completed', 'An error occurred while pausing MW')
 
 
+def create_am_silence(duration, reason=None):
+    """Create an Alertmanager silence for the given duration.  Returns silence ID or None."""
+    if not _am_backend_enabled():
+        return None
+    from modules.alertmanager import create_silence
+    comment = reason or 'mwbot-maintenance'
+    silence_id = create_silence(duration, comment=comment)
+    if not silence_id:
+        logging.warning('Alertmanager silence creation failed or returned no ID')
+    return silence_id
+
+
+def expire_am_silence(silence_id):
+    """Expire an Alertmanager silence by ID.  No-op if ID is None or backend disabled."""
+    if not silence_id:
+        return
+    if not _am_backend_enabled():
+        return
+    from modules.alertmanager import expire_silence
+    expire_silence(silence_id)
+
+
 def stop_timed_mw(bot, notify_on_success=False):
     state = load_mw_state()
     if state:
@@ -187,8 +219,19 @@ def stop_timed_mw(bot, notify_on_success=False):
             state.get('reason') or 'Maintenance window',
             state.get('expires_at'),
         )
-    result = stop_mw()
-    success = result == 'MW has been completed'
+
+    kuma_success = True
+    if _kuma_backend_enabled():
+        result = stop_mw()
+        kuma_success = result == 'MW has been completed'
+    else:
+        result = 'MW has been completed'
+
+    am_silence_id = (state or {}).get('alertmanager_silence_id')
+    if am_silence_id:
+        expire_am_silence(am_silence_id)
+
+    success = kuma_success
 
     if success and state:
         delete_message(bot, state.get('notify_chat_id'), state.get('notify_message_id'))
