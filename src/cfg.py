@@ -103,7 +103,7 @@ RADARR4K_API_KEY = os.getenv('RADARR4K_API_KEY', RADARR_API_KEY)
 #   "kuma,alertmanager" (or "alertmanager,kuma") - dual-write
 ALERTMANAGER_URL = _get_optional('ALERTMANAGER_URL')
 ALERTMANAGER_MW_MATCHERS = _get_json('ALERTMANAGER_MW_MATCHERS') if os.getenv('ALERTMANAGER_MW_MATCHERS') else [
-    {'name': 'alertname', 'value': '.*', 'isRegex': True, 'isEqual': True},
+    {'name': 'alertname', 'value': '.+', 'isRegex': True, 'isEqual': True},
 ]
 ALERTMANAGER_OPEN_MW_DURATION = _get_duration('ALERTMANAGER_OPEN_MW_DURATION', '12h')
 _raw_backends = _get_optional('MAINTENANCE_BACKENDS', 'kuma')
