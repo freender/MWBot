@@ -96,20 +96,6 @@ def _coerce_chat_id(value):
         return None
 
 
-def _get_env_authorized_chat_ids():
-    return {
-        chat_id for chat_id in (_coerce_chat_id(value) for value in cfg.TELEGRAM_AUTH_USERS)
-        if chat_id is not None
-    }
-
-
-def _get_env_owner_chat_ids():
-    owner_chat_id = _coerce_chat_id(cfg.OWNER)
-    if owner_chat_id is None:
-        return set()
-    return {owner_chat_id}
-
-
 def _get_message_telegram_id(message):
     from_user = getattr(message, 'from_user', None)
     from_user_id = getattr(from_user, 'id', None)
@@ -150,8 +136,8 @@ def _get_seerr_notification_settings(user_id):
 
 
 def _refresh_seerr_access_cache():
-    authorized_chat_ids = set(_get_env_authorized_chat_ids())
-    owner_chat_ids = set(_get_env_owner_chat_ids())
+    authorized_chat_ids = set()
+    owner_chat_ids = set()
 
     users = _get_seerr_users()
     for user in users:
@@ -210,28 +196,13 @@ def _apply_access_test_override():
 
 
 def warm_seerr_access_cache():
-    if cfg.SEERR_ACCESS_ENV_ONLY:
-        _seerr_access_cache.update({
-            'authorized_chat_ids': set(_get_env_authorized_chat_ids()),
-            'owner_chat_ids': set(_get_env_owner_chat_ids()),
-            'loaded': True,
-        })
-        _apply_access_test_override()
-        cache = get_seerr_access_cache()
-        logging.info(
-            'Seerr Telegram access cache forced to env-only mode: %s authorized, %s owners',
-            len(cache['authorized_chat_ids']),
-            len(cache['owner_chat_ids']),
-        )
-        return cache
-
     try:
         _refresh_seerr_access_cache()
     except Exception as exc:
         logging.warning('Unable to load Seerr Telegram access cache on startup: %s', exc)
         _seerr_access_cache.update({
-            'authorized_chat_ids': set(_get_env_authorized_chat_ids()),
-            'owner_chat_ids': set(_get_env_owner_chat_ids()),
+            'authorized_chat_ids': set(),
+            'owner_chat_ids': set(),
             'loaded': True,
         })
 

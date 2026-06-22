@@ -10,7 +10,7 @@ MWBot is a Telegram bot designed to manage maintenance windows (MW) in Uptime Ku
 - Notify a dedicated Telegram channel about maintenance activities.
 - Support a separate notification chat for testing via environment variable override.
 - Manage IP addresses for access control.
-- Authenticate users based on Telegram chat IDs.
+- Authenticate users from Seerr Telegram notification settings.
 - Interactive redownload workflow from the Media menu for Seerr issue, movie, or series URLs that blocklists bad Sonarr/Radarr releases.
 
 ## Docker Compose Setup
@@ -28,7 +28,6 @@ services:
       - TOKEN=${TELEGRAM_TOKEN} # Set your Telegram bot token
       - CHAT_ID=${TELEGRAM_CHATID} # Default Telegram chat ID for notifications
       - NOTIFY_CHAT_ID=${TELEGRAM_NOTIFY_CHATID} # Optional override for maintenance notifications
-      - OWNER=${OWNER} # Telegram user ID of the bot owner
       - KUMA_HOST=${UPTIME_HOST} # Uptime Kuma IP address and port
       - KUMA_LOGIN=${UPTIME_LOGIN} # Uptime Kuma login
       - KUMA_PASSWORD=${UPTIME_PASSWORD} # Uptime Kuma password
@@ -38,7 +37,6 @@ services:
       - WAF_RULESET=${WAF_RULESET} # Cloudflare WAF ruleset ID
       - WAF_RULEID=${WAF_RULEID} # Cloudflare WAF rule ID
       - CDN_URL=${CDN_URL} # CDN URL for firewall rules
-      - TELEGRAM_AUTH_USERS=${TELEGRAM_AUTH_USERS} # JSON list of authorized Telegram user IDs
       - MW_BOT_ASN_DEFAULT=${MW_BOT_ASN_DEFAULT} # Default ASN for MWBot
       - TZ=${TIMEZONE} # Server timezone
       - SEERR_BASE_URL=${SEERR_BASE_URL} # Seerr base URL
@@ -58,7 +56,6 @@ services:
 - `TOKEN`: Your Telegram bot token.
 - `CHAT_ID`: The default Telegram chat ID to receive notifications.
 - `NOTIFY_CHAT_ID`: Optional notification chat override. If unset, `CHAT_ID` is used.
-- `OWNER`: The Telegram user ID of the bot owner, who has full command access.
 - `KUMA_HOST`: The IP address and port of your Uptime Kuma instance.
 - `KUMA_LOGIN`: The login username for Uptime Kuma.
 - `KUMA_PASSWORD`: The password for Uptime Kuma.
@@ -68,11 +65,10 @@ services:
 - `WAF_RULESET`: The ruleset ID for Cloudflare WAF.
 - `WAF_RULEID`: The rule ID for Cloudflare WAF.
 - `CDN_URL`: The CDN URL used in firewall rules.
-- `TELEGRAM_AUTH_USERS`: A JSON-encoded list of authorized Telegram user IDs.
 - `MW_BOT_ASN_DEFAULT`: The default ASN for MWBot.
 - `TZ`: The server's timezone.
 - `SEERR_BASE_URL`: Base URL for Seerr.
-- `SEERR_API_KEY`: API key for Seerr issue lookups.
+- `SEERR_API_KEY`: API key for Seerr issue lookups and Telegram access sync.
 - `SONARR_BASE_URL`: Base URL for Sonarr.
 - `SONARR_API_KEY`: API key for Sonarr queue/history access.
 - `RADARR_BASE_URL`: Base URL for Radarr.

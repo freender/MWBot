@@ -14,7 +14,6 @@ def load_modules_package(temp_dir):
         'TOKEN': 'token',
         'CHAT_ID': '100',
         'NOTIFY_CHAT_ID': '200',
-        'OWNER': '1',
         'KUMA_HOST': 'http://kuma.local',
         'KUMA_LOGIN': 'user',
         'KUMA_PASSWORD': 'pass',
@@ -24,7 +23,6 @@ def load_modules_package(temp_dir):
         'WAF_RULESET': 'ruleset',
         'WAF_RULEID': 'rule',
         'CDN_URL': 'example.com',
-        'TELEGRAM_AUTH_USERS': '["1","2"]',
         'MW_BOT_ASN_DEFAULT': '1234',
         'TZ': 'UTC',
         'SEERR_BASE_URL': 'https://seerr.example.com',
@@ -545,20 +543,6 @@ class ModulesTest(unittest.TestCase):
         self.assertTrue(self.modules.is_owner(owner_message))
         self.assertFalse(self.modules.is_owner(user_message))
 
-    def test_warm_seerr_access_cache_can_be_forced_to_env_only(self):
-        message = mock.Mock(
-            chat=mock.Mock(id=2),
-            from_user=mock.Mock(id=2),
-        )
-
-        with mock.patch.object(self.cfg, 'SEERR_ACCESS_ENV_ONLY', True, create=True):
-            with mock.patch.object(self.modules, 'request_json') as request_json:
-                cache = self.modules.warm_seerr_access_cache()
-
-        self.assertTrue(cache['loaded'])
-        self.assertTrue(self.modules.is_auth_user(message))
-        request_json.assert_not_called()
-
     def test_warm_seerr_access_cache_can_force_owner_to_authorized_only(self):
         payload = {'results': [{'id': 1}, {'id': 3}], 'pageInfo': {'results': 2}}
         settings = [
@@ -597,8 +581,7 @@ class ModulesTest(unittest.TestCase):
         self.assertFalse(self.modules.is_auth_user(user_message))
         self.assertFalse(self.modules.is_owner(user_message))
 
-    def test_warm_seerr_access_cache_falls_back_to_env(self):
-        payload = {'results': [{'id': 1}], 'pageInfo': {'results': 1}}
+    def test_warm_seerr_access_cache_uses_empty_access_when_seerr_fails(self):
         message = mock.Mock(
             chat=mock.Mock(id=2),
             from_user=mock.Mock(id=2),
@@ -608,7 +591,7 @@ class ModulesTest(unittest.TestCase):
             cache = self.modules.warm_seerr_access_cache()
 
         self.assertTrue(cache['loaded'])
-        self.assertTrue(self.modules.is_auth_user(message))
+        self.assertFalse(self.modules.is_auth_user(message))
 
     def test_mw_status_text(self):
         state = self.modules.build_mw_state(timedelta(minutes=45), reason='Firmware maintenance')
