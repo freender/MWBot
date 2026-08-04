@@ -11,7 +11,7 @@
 - Deployment note: MWBot needs network reachability to `seerr`, `sonarr`, `sonarr4k`, `radarr`, and `radarr4k`; on helm this is done by attaching the container to `net_overlay`
 - Telegram inline URL buttons must use a browser-valid public URL; if Seerr is configured with an internal host like `seerr:5055`, set `SEERR_PUBLIC_URL` for Telegram-facing links
 - Access source of truth: MWBot authorizes users from Seerr notification `telegramChatId` values; Seerr user `id=1` is treated as owner
-- Plex network detection: the Cloudflare Worker under `worker/` records Cloudflare's client IP and ASN in a five-minute KV session; MWBot polls it, grants both in the WAF rule, and sends an explicit success/failure result; manual IP entry is retired
+- Plex network detection: the Cloudflare Worker under `worker/` records Cloudflare's client ASN in a five-minute KV session; MWBot polls it, grants that ASN in the WAF rule, and sends an explicit success/failure result; manual IP entry is retired
 - Access test override: MWBot supports per-user auth override via `SEERR_ACCESS_TEST_USER_ID` + `SEERR_ACCESS_TEST_MODE` in `/mnt/cache/appdata/mwbot/.env` on `helm`; valid modes are empty/`normal`, `authorized`, `unauthorized`, and `owner`
 - Access test workflow on `helm`: change `SEERR_ACCESS_TEST_MODE` in `/mnt/cache/appdata/mwbot/.env`, then restart with `ssh helm "docker compose -f /mnt/cache/appdata/mwbot/compose.yml up -d mwbot"`; no rebuild needed for mode switches
 

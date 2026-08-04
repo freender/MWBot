@@ -1,4 +1,3 @@
-import ipaddress
 import re
 from urllib.parse import urlparse
 
@@ -82,16 +81,11 @@ def get_network_check(session_id):
     if status != 'complete':
         return None, 'The network detection service returned an invalid status.'
 
-    ip_address = payload.get('ip')
     asn = str(payload.get('asn') or '')
-    try:
-        ipaddress.ip_address(ip_address)
-    except (TypeError, ValueError):
-        return None, 'The network detection service returned an invalid IP address.'
     if not asn.isdigit() or not 0 < int(asn) <= 4_294_967_295:
         return None, 'The network detection service returned an invalid ASN.'
 
-    return {'status': 'complete', 'ip': ip_address, 'asn': asn}, None
+    return {'status': 'complete', 'asn': asn}, None
 
 
 def delete_network_check(session_id):

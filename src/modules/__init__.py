@@ -8,7 +8,7 @@ from modules.firewall import (
     disable_asn_to_firewall_rule,
     get_firewall_status_text,
     get_next_firewall_run,
-    get_networks_from_firewall_rule,
+    get_asns_from_firewall_rule,
     get_rule_modify_date,
     get_rule_status,
     grant_network_access,

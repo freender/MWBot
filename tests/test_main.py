@@ -254,7 +254,7 @@ class MainAuthTest(unittest.TestCase):
             'message_id': 55,
         }
         self.main._pending_network_checks['100:20'] = pending
-        detected = {'status': 'complete', 'ip': '192.0.2.1', 'asn': '7922'}
+        detected = {'status': 'complete', 'asn': '7922'}
 
         with mock.patch.object(self.main, 'get_network_check', return_value=(detected, None)), \
              mock.patch.object(self.main, 'grant_network_access', return_value=(True, 'access granted')) as grant_access, \
@@ -264,7 +264,7 @@ class MainAuthTest(unittest.TestCase):
              mock.patch.object(self.main.time, 'monotonic', return_value=0):
             self.main._poll_network_check('100:20', pending)
 
-        grant_access.assert_called_once_with('192.0.2.1', '7922')
+        grant_access.assert_called_once_with('7922')
         delete_check.assert_called_once_with('session-id')
         show_result.assert_called_once_with(
             100,
@@ -283,7 +283,7 @@ class MainAuthTest(unittest.TestCase):
             'message_id': 55,
         }
         self.main._pending_network_checks['100:20'] = pending
-        complete = {'status': 'complete', 'ip': '192.0.2.1', 'asn': '7922'}
+        complete = {'status': 'complete', 'asn': '7922'}
 
         with mock.patch.object(
             self.main,
@@ -319,7 +319,7 @@ class MainAuthTest(unittest.TestCase):
         }
         replacement = {**pending, 'id': 'new-session'}
         self.main._pending_network_checks['100:20'] = pending
-        complete = {'status': 'complete', 'ip': '192.0.2.1', 'asn': '7922'}
+        complete = {'status': 'complete', 'asn': '7922'}
 
         def replace_while_reading(_session_id):
             self.main._pending_network_checks['100:20'] = replacement

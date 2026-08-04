@@ -56,34 +56,6 @@ function isSessionId(value) {
   return SESSION_ID_PATTERN.test(value);
 }
 
-function isIpv4(value) {
-  const parts = value.split(".");
-  return parts.length === 4 && parts.every((part) => /^\d{1,3}$/.test(part) && Number(part) <= 255);
-}
-
-function isIpAddress(value) {
-  if (typeof value !== "string" || value.length === 0 || value.length > 45) return false;
-  if (isIpv4(value)) return true;
-  if (!/^[0-9a-fA-F:.]+$/.test(value) || !value.includes(":") || value.includes(":::")) return false;
-
-  const compressed = value.split("::");
-  if (compressed.length > 2) return false;
-  const parts = value.split(":").filter(Boolean);
-  let units = 0;
-  for (let index = 0; index < parts.length; index += 1) {
-    const part = parts[index];
-    if (part.includes(".")) {
-      if (index !== parts.length - 1 || !isIpv4(part)) return false;
-      units += 2;
-    } else if (/^[0-9a-fA-F]{1,4}$/.test(part)) {
-      units += 1;
-    } else {
-      return false;
-    }
-  }
-  return compressed.length === 2 ? units < 8 : units === 8;
-}
-
 function isAsn(value) {
   return Number.isInteger(value) && value > 0 && value <= AS_NUMBER_MAX;
 }
@@ -111,7 +83,6 @@ async function getSession(env, id) {
 function sessionResponse(id, session) {
   const body = { id, status: session.status, expires_in: remainingSeconds(session.expiresAt) };
   if (session.status === "complete") {
-    body.ip = session.ip;
     body.asn = session.asn;
   }
   return json(body);
@@ -134,9 +105,8 @@ async function checkSession(request, env, id) {
   if (session.status === "complete") return checkCompleteResponse();
   if (session.status !== "pending") return error("not found", 404);
 
-  const ip = requestCfIp(request);
   const asn = requestCfAsn(request);
-  if (!isIpAddress(ip) || !isAsn(asn)) return error("network data unavailable", 422);
+  if (!isAsn(asn)) return error("network data unavailable", 422);
 
   const ttl = remainingSeconds(session.expiresAt);
   if (ttl === 0) {
@@ -144,16 +114,12 @@ async function checkSession(request, env, id) {
     return error("not found", 404);
   }
   // KV requires at least 60 seconds; expiresAt still enforces the original session deadline.
-  await env.SESSIONS.put(id, JSON.stringify({ status: "complete", expiresAt: session.expiresAt, ip, asn }), { expirationTtl: Math.max(60, ttl) });
+  await env.SESSIONS.put(id, JSON.stringify({ status: "complete", expiresAt: session.expiresAt, asn }), { expirationTtl: Math.max(60, ttl) });
   return checkCompleteResponse();
 }
 
 function checkCompleteResponse() {
   return new Response(CHECK_COMPLETE_HTML, { headers: securityHeaders("text/html; charset=utf-8") });
-}
-
-function requestCfIp(request) {
-  return request.headers.get("CF-Connecting-IP");
 }
 
 function requestCfAsn(request) {

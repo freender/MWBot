@@ -687,63 +687,62 @@ class ModulesTest(unittest.TestCase):
 
     def test_get_firewall_status_text_returns_disabled_when_rule_off(self):
         with mock.patch.object(self.firewall, 'get_rule_status', return_value=(False, None)):
-            with mock.patch.object(self.firewall, 'get_networks_from_firewall_rule') as get_networks:
+            with mock.patch.object(self.firewall, 'get_asns_from_firewall_rule') as get_asns:
                 status = self.modules.get_firewall_status_text()
 
         self.assertEqual(status, 'Plex access is disabled.')
-        get_networks.assert_not_called()
+        get_asns.assert_not_called()
 
     def test_get_firewall_status_text_lists_temporary_networks(self):
         with mock.patch.object(self.firewall, 'get_rule_status', return_value=(True, None)):
             with mock.patch.object(
                 self.firewall,
-                'get_networks_from_firewall_rule',
-                return_value=(['192.0.2.1'], ['1234', '7922'], None),
+                'get_asns_from_firewall_rule',
+                return_value=(['1234', '7922'], None),
             ):
                 status = self.modules.get_firewall_status_text()
 
-        self.assertEqual(status, 'Plex access is enabled. 1 temporary IP address; ASNs: 7922.')
+        self.assertEqual(status, 'Plex access is enabled. Temporary ASNs: 7922.')
 
-    def test_build_rule_payload_combines_ip_and_asn(self):
-        payload = self.firewall._build_rule_payload(['192.0.2.1', '2001:db8::1'], ['1234', '7922'], enabled=True)
+    def test_build_rule_payload_uses_asn_only(self):
+        payload = self.firewall._build_rule_payload(['1234', '7922'], enabled=True)
 
         self.assertEqual(
             payload['expression'],
-            '((ip.src in {192.0.2.1 2001:db8::1} or ip.geoip.asnum in {1234 7922}) '
-            'and http.host wildcard "example.com")',
+            '(ip.geoip.asnum in {1234 7922} and http.host wildcard "example.com")',
         )
+        self.assertNotIn('ip.src', payload['expression'])
         self.assertTrue(payload['enabled'])
 
-    def test_get_networks_from_firewall_rule_parses_ip_and_asn(self):
+    def test_get_asns_from_legacy_firewall_rule_ignores_ip_clause(self):
         rule = {
             'expression': '((ip.src in {192.0.2.1 2001:db8::1} or '
                           'ip.geoip.asnum in {1234 7922}) and http.host wildcard "example.com")',
         }
         with mock.patch.object(self.firewall, '_get_waf_rule', return_value=(rule, None)):
-            ips, asns, error = self.modules.get_networks_from_firewall_rule()
+            asns, error = self.modules.get_asns_from_firewall_rule()
 
-        self.assertEqual(ips, ['192.0.2.1', '2001:db8::1'])
         self.assertEqual(asns, ['1234', '7922'])
         self.assertIsNone(error)
 
-    def test_grant_network_access_adds_ip_and_asn(self):
+    def test_grant_network_access_adds_asn_and_canonicalizes_rule(self):
         update_lock = mock.MagicMock()
         with mock.patch.object(
             self.firewall,
-            'get_networks_from_firewall_rule',
-            return_value=([], ['1234'], None),
+            'get_asns_from_firewall_rule',
+            return_value=(['1234'], None),
         ), mock.patch.object(
             self.firewall,
             '_update_firewall_rule',
             return_value=(True, None),
         ) as update_rule, mock.patch.object(self.firewall, '_WAF_UPDATE_LOCK', update_lock):
-            success, result = self.modules.grant_network_access('192.0.2.1', '7922')
+            success, result = self.modules.grant_network_access('7922')
 
         self.assertTrue(success)
-        self.assertIn('current IP and ISP', result)
+        self.assertIn('current ISP', result)
         expression = update_rule.call_args.args[0]['expression']
-        self.assertIn('ip.src in {192.0.2.1}', expression)
         self.assertIn('ip.geoip.asnum in {1234 7922}', expression)
+        self.assertNotIn('ip.src', expression)
         update_lock.__enter__.assert_called_once_with()
         update_lock.__exit__.assert_called_once()
 
@@ -774,11 +773,11 @@ class ModulesTest(unittest.TestCase):
             self.assertFalse(self.modules.network_check_is_configured())
 
     def test_get_network_check_validates_complete_network(self):
-        payload = {'status': 'complete', 'ip': '2001:db8::1', 'asn': 7922}
+        payload = {'status': 'complete', 'asn': 7922}
         with mock.patch.object(self.network_check, 'request_json', return_value=payload):
             detected, error = self.modules.get_network_check('session-id')
 
-        self.assertEqual(detected, {'status': 'complete', 'ip': '2001:db8::1', 'asn': '7922'})
+        self.assertEqual(detected, {'status': 'complete', 'asn': '7922'})
         self.assertIsNone(error)
 
     def test_get_next_firewall_run_uses_same_day_when_before_window(self):

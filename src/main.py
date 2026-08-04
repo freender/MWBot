@@ -547,7 +547,7 @@ def _poll_network_check(key, pending):
         if _pending_network_checks.get(key) is not pending:
             return
 
-        success, result = grant_network_access(detected['ip'], detected['asn'])
+        success, result = grant_network_access(detected['asn'])
         if success:
             if not delete_network_check(pending['id']):
                 logging.warning('Unable to consume completed network detection session')

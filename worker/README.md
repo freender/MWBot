@@ -1,6 +1,6 @@
 # MWBot Network Check Worker
 
-This Worker gives MWBot the client IP and ASN observed by Cloudflare. Sessions last five
+This Worker gives MWBot the client ASN observed by Cloudflare. Sessions last five
 minutes, are identified by a random 256-bit token, and contain no Telegram identifiers.
 The browser-facing page never displays the detected values.
 
@@ -42,8 +42,8 @@ The browser-facing page never displays the detected values.
 
 1. MWBot authenticates `POST /api/sessions` and receives a one-time check URL.
 2. The user's browser opens `GET /check/<session>` from the network being authorized.
-3. The Worker stores `CF-Connecting-IP` and `request.cf.asn` in KV.
-4. MWBot authenticates `GET /api/sessions/<session>` and grants the exact IP or ASN in WAF.
+3. The Worker stores `request.cf.asn` in KV.
+4. MWBot authenticates `GET /api/sessions/<session>` and grants that ASN in WAF.
 5. After the WAF update succeeds, MWBot deletes the Worker session.
 
 The API token protects session creation, retrieval, and deletion. The random check URL is a

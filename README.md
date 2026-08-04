@@ -9,8 +9,8 @@ MWBot is a Telegram bot designed to manage maintenance windows (MW) in Uptime Ku
 - Auto-stop timed maintenance windows and clean up the notification message when the window completes successfully.
 - Notify a dedicated Telegram channel about maintenance activities.
 - Support a separate notification chat for testing via environment variable override.
-- Manage IP addresses for access control.
-- Detect a user's Cloudflare-observed IP and ASN through a short-lived Worker session.
+- Manage ISP ASN access through Cloudflare WAF.
+- Detect a user's Cloudflare-observed ASN through a short-lived Worker session.
 - Authenticate users from Seerr Telegram notification settings.
 - Interactive redownload workflow from the Media menu for Seerr issue, movie, or series URLs that blocklists bad Sonarr/Radarr releases.
 
@@ -89,7 +89,7 @@ services:
 2. **Manage Maintenance Windows**:
    - Open the Maintenance section from the menu.
    - Use the inline buttons for silent start, regular start, reboot 5m, firmware 5m, silent stop, stop + notify, and status.
-3. **Plex Access**: Open the Plex Access section and tap the network-check link. MWBot applies the detected IP and ISP automatically, then updates the same menu with an explicit success or failure result.
+3. **Plex Access**: Open the Plex Access section and tap the network-check link. MWBot applies the detected ISP ASN automatically, then updates the same menu with an explicit success or failure result.
 4. **Redownload Control**: Open the Media section and follow the prompts. The bot confirms the target, then blocklists the matching release in Sonarr or Radarr so it is not downloaded again.
 
 ## How Redownload Works
@@ -110,7 +110,7 @@ services:
 - In the current homelab deployment, `mwbot` is attached to both `net.internal` and `net_overlay` so it can talk to the arr containers on tower.
 - If you only run one Sonarr or Radarr instance, the optional `SONARR4K_*` and `RADARR4K_*` values can be omitted and will fall back to the standard endpoints.
 - Network detection uses the Worker in `worker/`; see `worker/README.md`. Both Worker environment variables are required for Plex access grants.
-- The temporary WAF rule permits the detected IP **or** its Cloudflare ASN. This preserves the existing ISP-wide access policy while the exact IP covers ASN-classification mismatches.
+- The temporary WAF rule permits the ASN reported directly by Cloudflare, using the same classification as the WAF `ip.geoip.asnum` field.
 
 ## Timed Maintenance Windows
 
