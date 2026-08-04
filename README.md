@@ -10,6 +10,7 @@ MWBot is a Telegram bot designed to manage maintenance windows (MW) in Uptime Ku
 - Notify a dedicated Telegram channel about maintenance activities.
 - Support a separate notification chat for testing via environment variable override.
 - Manage IP addresses for access control.
+- Detect a user's Cloudflare-observed IP and ASN through a short-lived Worker session.
 - Authenticate users from Seerr Telegram notification settings.
 - Interactive redownload workflow from the Media menu for Seerr issue, movie, or series URLs that blocklists bad Sonarr/Radarr releases.
 
@@ -38,6 +39,8 @@ services:
       - WAF_RULEID=${WAF_RULEID} # Cloudflare WAF rule ID
       - CDN_URL=${CDN_URL} # CDN URL for firewall rules
       - MW_BOT_ASN_DEFAULT=${MW_BOT_ASN_DEFAULT} # Default ASN for MWBot
+      - ACCESS_CHECK_API_URL=${ACCESS_CHECK_API_URL} # Optional Cloudflare network-check Worker URL
+      - ACCESS_CHECK_API_TOKEN=${ACCESS_CHECK_API_TOKEN} # Shared Worker API token
       - TZ=${TIMEZONE} # Server timezone
       - SEERR_BASE_URL=${SEERR_BASE_URL} # Seerr base URL
       - SEERR_API_KEY=${SEERR_API_KEY} # Seerr API key
@@ -66,6 +69,8 @@ services:
 - `WAF_RULEID`: The rule ID for Cloudflare WAF.
 - `CDN_URL`: The CDN URL used in firewall rules.
 - `MW_BOT_ASN_DEFAULT`: The default ASN for MWBot.
+- `ACCESS_CHECK_API_URL`: Optional base URL for the Cloudflare network-check Worker.
+- `ACCESS_CHECK_API_TOKEN`: Shared secret for MWBot-to-Worker API calls. Automatic detection is enabled only when both Worker values are configured.
 - `TZ`: The server's timezone.
 - `SEERR_BASE_URL`: Base URL for Seerr.
 - `SEERR_API_KEY`: API key for Seerr issue lookups and Telegram access sync.
@@ -84,7 +89,7 @@ services:
 2. **Manage Maintenance Windows**:
    - Open the Maintenance section from the menu.
    - Use the inline buttons for silent start, regular start, reboot 5m, firmware 5m, silent stop, stop + notify, and status.
-3. **Plex Access**: Open the Plex Access section to allow your current location, remove access, or check status.
+3. **Plex Access**: Open the Plex Access section and tap the network-check link. MWBot applies the detected IP and ISP automatically, then updates the same menu with an explicit success or failure result.
 4. **Redownload Control**: Open the Media section and follow the prompts. The bot confirms the target, then blocklists the matching release in Sonarr or Radarr so it is not downloaded again.
 
 ## How Redownload Works
@@ -104,6 +109,8 @@ services:
 - MWBot must be able to resolve and reach `seerr`, `sonarr`, `sonarr4k`, `radarr`, and `radarr4k` over Docker networking.
 - In the current homelab deployment, `mwbot` is attached to both `net.internal` and `net_overlay` so it can talk to the arr containers on tower.
 - If you only run one Sonarr or Radarr instance, the optional `SONARR4K_*` and `RADARR4K_*` values can be omitted and will fall back to the standard endpoints.
+- Network detection uses the Worker in `worker/`; see `worker/README.md`. Both Worker environment variables are required for Plex access grants.
+- The temporary WAF rule permits the detected IP **or** its Cloudflare ASN. This preserves the existing ISP-wide access policy while the exact IP covers ASN-classification mismatches.
 
 ## Timed Maintenance Windows
 

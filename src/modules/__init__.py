@@ -4,17 +4,21 @@ import cfg
 from telebot.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 from modules.common import build_api_headers, normalize_base_url, request_json
 from modules.firewall import (
-    add_asn_to_firewall_rule,
     convert_to_local_time,
     disable_asn_to_firewall_rule,
     get_firewall_status_text,
-    get_asn_from_ip,
-    get_asns_from_firewall_rule,
     get_next_firewall_run,
+    get_networks_from_firewall_rule,
     get_rule_modify_date,
     get_rule_status,
-    is_valid_ip,
+    grant_network_access,
     schedule_fw_task,
+)
+from modules.network_check import (
+    create_network_check,
+    delete_network_check,
+    get_network_check,
+    network_check_is_configured,
 )
 from modules.maintenance import (
     build_mw_state,

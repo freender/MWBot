@@ -1,5 +1,7 @@
 import ipaddress
 import logging
+import re
+import threading
 import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -9,32 +11,7 @@ import requests
 import cfg
 from modules.common import request_json
 
-
-def is_valid_ip(ip):
-    try:
-        ipaddress.ip_address(ip)
-        return True
-    except (ValueError, TypeError):
-        return False
-
-
-def get_asn_from_ip(ip):
-    try:
-        url = f'http://ip-api.com/json/{ip}?fields=as'
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        payload = response.json()
-        as_field = payload.get('as') or ''
-        if not as_field.startswith('AS'):
-            return None, 'ASN for this IP is not found. Double-check it from the Plex menu and try again.'
-        asn = as_field.removeprefix('AS').split()[0]
-        if not asn.isdigit():
-            return None, 'ASN for this IP is not found. Double-check it from the Plex menu and try again.'
-        return asn, None
-    except requests.exceptions.RequestException as exc:
-        result = 'ASN for this IP is not found. Double-check it from the Plex menu and try again.'
-        logging.error('%s: %s', result, exc)
-        return None, result
+_WAF_UPDATE_LOCK = threading.Lock()
 
 
 def convert_to_local_time(timestamp):
@@ -77,12 +54,20 @@ def _get_waf_rule():
         return None, result
 
 
-def _build_rule_payload(asns, enabled):
-    expression_asns = ' '.join(map(str, asns))
+def _build_rule_payload(ip_addresses, asns, enabled):
+    source_expressions = []
+    if ip_addresses:
+        expression_ips = ' '.join(map(str, ip_addresses))
+        source_expressions.append(f'ip.src in {{{expression_ips}}}')
+    if asns:
+        expression_asns = ' '.join(map(str, asns))
+        source_expressions.append(f'ip.geoip.asnum in {{{expression_asns}}}')
+    # ASN-wide access is intentional; the exact IP covers lookup/Cloudflare ASN mismatches.
+    source_expression = ' or '.join(source_expressions)
     return {
         'action': 'skip',
         'action_parameters': {'ruleset': 'current'},
-        'expression': f'(ip.geoip.asnum in {{{expression_asns}}} and http.host wildcard "{cfg.CDN_URL}")',
+        'expression': f'(({source_expression}) and http.host wildcard "{cfg.CDN_URL}")',
         'description': 'Whitelist MWBot',
         'enabled': enabled,
     }
@@ -103,37 +88,63 @@ def _update_firewall_rule(rule_data):
         return False, result
 
 
-def get_asns_from_firewall_rule():
+def get_networks_from_firewall_rule():
     rule, error = _get_waf_rule()
     if rule is None:
-        return None, error
+        return None, None, error
 
     expression = rule.get('expression', '')
-    asns = [segment for segment in expression.split('{', 1)[-1].split('}', 1)[0].split() if segment.isdigit()]
-    logging.info('Old Rule: %s', ' '.join(map(str, asns)))
-    return asns, None
+    ip_match = re.search(r'ip\.src\s+in\s+\{([^}]*)\}', expression)
+    asn_match = re.search(r'ip\.geoip\.asnum\s+in\s+\{([^}]*)\}', expression)
+    ip_addresses = []
+    if ip_match:
+        for segment in ip_match.group(1).split():
+            try:
+                ip_addresses.append(str(ipaddress.ip_address(segment)))
+            except ValueError:
+                continue
+    asns = []
+    if asn_match:
+        asns = [segment for segment in asn_match.group(1).split() if segment.isdigit()]
+    logging.info('Old Rule: %s IPs, %s ASNs', len(ip_addresses), len(asns))
+    return ip_addresses, asns, None
 
 
-def add_asn_to_firewall_rule(asn):
-    old_asns, error = get_asns_from_firewall_rule()
-    if old_asns is None:
-        result = f'An error occurred while retrieving ASNs from the firewall rule: {error}'
-        logging.error(result)
-        return result
+def grant_network_access(ip_address, asn):
+    try:
+        normalized_ip = str(ipaddress.ip_address(ip_address))
+    except (TypeError, ValueError):
+        return False, 'Unable to add access because the detected IP address is invalid.'
+    normalized_asn = str(asn)
+    if not normalized_asn.isdigit() or not 0 < int(normalized_asn) <= 4_294_967_295:
+        return False, 'Unable to add access because the detected ASN is invalid.'
 
-    if asn in old_asns:
-        result = f'ASN {asn} already exists in the firewall rule.'
-        logging.info(result)
-        return result
+    with _WAF_UPDATE_LOCK:
+        old_ips, old_asns, error = get_networks_from_firewall_rule()
+        if old_ips is None:
+            result = f'An error occurred while retrieving network access: {error}'
+            logging.error(result)
+            return False, result
 
-    old_asns.append(asn)
-    logging.info('New Rule: %s', ' '.join(map(str, old_asns)))
-    success, error = _update_firewall_rule(_build_rule_payload(old_asns, enabled=True))
-    if success:
-        result = f'ASN {asn} has been successfully added to the firewall rule.'
-        logging.info(result)
-        return result
-    return error
+        changed = False
+        if normalized_ip not in old_ips:
+            old_ips.append(normalized_ip)
+            changed = True
+        if normalized_asn not in old_asns:
+            old_asns.append(normalized_asn)
+            changed = True
+        if not changed:
+            result = 'This network already has access.'
+            logging.info(result)
+            return True, result
+
+        logging.info('New Rule: %s IPs, %s ASNs', len(old_ips), len(old_asns))
+        success, error = _update_firewall_rule(_build_rule_payload(old_ips, old_asns, enabled=True))
+        if success:
+            result = 'Your current IP and ISP have been granted temporary access.'
+            logging.info(result)
+            return True, result
+        return False, error
 
 
 def get_rule_status():
@@ -159,17 +170,23 @@ def get_firewall_status_text():
     if not enabled:
         return 'Plex access is disabled.'
 
-    asns, error = get_asns_from_firewall_rule()
-    if asns is None:
+    ip_addresses, asns, error = get_networks_from_firewall_rule()
+    if ip_addresses is None:
         result = f'Unable to retrieve Plex access details: {error}'
         logging.error(result)
         return result
 
     temporary_asns = [asn for asn in asns if str(asn) != str(cfg.MW_BOT_ASN_DEFAULT)]
-    if not temporary_asns:
+    if not ip_addresses and not temporary_asns:
         return 'Plex access is enabled.'
 
-    return f'Plex access is enabled. Temporary ASNs: {", ".join(temporary_asns)}.'
+    details = []
+    if ip_addresses:
+        ip_label = 'IP address' if len(ip_addresses) == 1 else 'IP addresses'
+        details.append(f'{len(ip_addresses)} temporary {ip_label}')
+    if temporary_asns:
+        details.append(f'ASNs: {", ".join(temporary_asns)}')
+    return f'Plex access is enabled. {"; ".join(details)}.'
 
 
 def get_rule_modify_date():
@@ -186,8 +203,9 @@ def get_rule_modify_date():
 
 
 def disable_asn_to_firewall_rule():
-    rule_data = _build_rule_payload([cfg.MW_BOT_ASN_DEFAULT], enabled=False)
-    success, error = _update_firewall_rule(rule_data)
+    rule_data = _build_rule_payload([], [cfg.MW_BOT_ASN_DEFAULT], enabled=False)
+    with _WAF_UPDATE_LOCK:
+        success, error = _update_firewall_rule(rule_data)
     if success:
         result = 'Firewall rule has been disabled.'
         logging.info(result)

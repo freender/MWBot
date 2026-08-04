@@ -69,6 +69,8 @@ def load_main_module(temp_dir):
         'WAF_RULEID': 'rule',
         'CDN_URL': 'example.com',
         'MW_BOT_ASN_DEFAULT': '1234',
+        'ACCESS_CHECK_API_URL': 'https://access-check.example.com',
+        'ACCESS_CHECK_API_TOKEN': 'access-check-token',
         'TZ': 'UTC',
         'SEERR_BASE_URL': 'https://seerr.example.com',
         'SEERR_PUBLIC_URL': 'https://seerr.example.com',
@@ -92,6 +94,7 @@ def load_main_module(temp_dir):
         'modules.common',
         'modules.firewall',
         'modules.maintenance',
+        'modules.network_check',
         'modules.redownload',
         'main',
     ]:
@@ -223,6 +226,140 @@ class MainAuthTest(unittest.TestCase):
         labels = button_texts(show_menu.call_args.args[2])
 
         self.assertEqual(labels, ['✅ Allow Plex', '🧹 Remove Access', '📋 Status', '⬅ Back'])
+
+    def test_start_network_check_shows_worker_link_and_tracks_session(self):
+        session = {'id': 'session-id', 'check_url': 'https://access-check.example.com/check/session-id'}
+        poll_thread = mock.Mock()
+        with mock.patch.object(self.main, 'create_network_check', return_value=(session, None)), \
+             mock.patch.object(self.main, '_show_menu', return_value=55) as show_menu, \
+             mock.patch.object(self.main.threading, 'Thread', return_value=poll_thread):
+            self.main._start_network_check(100, 20, message_id=55)
+
+        pending = self.main._pending_network_checks['100:20']
+        self.assertEqual(pending['id'], 'session-id')
+        self.assertEqual(pending['message_id'], 55)
+        markup = show_menu.call_args.args[2]
+        self.assertEqual(
+            button_texts(markup),
+            ['🌐 Detect Current Network', '⬅ Back'],
+        )
+        poll_thread.start.assert_called_once_with()
+
+    def test_poll_detected_network_grants_and_consumes_session(self):
+        pending = {
+            'id': 'session-id',
+            'check_url': 'https://access-check.example.com/check/session-id',
+            'chat_id': 100,
+            'user_id': 20,
+            'message_id': 55,
+        }
+        self.main._pending_network_checks['100:20'] = pending
+        detected = {'status': 'complete', 'ip': '192.0.2.1', 'asn': '7922'}
+
+        with mock.patch.object(self.main, 'get_network_check', return_value=(detected, None)), \
+             mock.patch.object(self.main, 'grant_network_access', return_value=(True, 'access granted')) as grant_access, \
+             mock.patch.object(self.main, 'delete_network_check', return_value=True) as delete_check, \
+             mock.patch.object(self.main, '_show_plex_result') as show_result, \
+             mock.patch.object(self.main.shutdown_event, 'wait', return_value=False), \
+             mock.patch.object(self.main.time, 'monotonic', return_value=0):
+            self.main._poll_network_check('100:20', pending)
+
+        grant_access.assert_called_once_with('192.0.2.1', '7922')
+        delete_check.assert_called_once_with('session-id')
+        show_result.assert_called_once_with(
+            100,
+            '✅ Access Enabled\naccess granted',
+            user_id=20,
+            message_id=55,
+        )
+        self.assertNotIn('100:20', self.main._pending_network_checks)
+
+    def test_poll_detected_network_waits_until_complete(self):
+        pending = {
+            'id': 'session-id',
+            'check_url': 'https://access-check.example.com/check/session-id',
+            'chat_id': 100,
+            'user_id': 20,
+            'message_id': 55,
+        }
+        self.main._pending_network_checks['100:20'] = pending
+        complete = {'status': 'complete', 'ip': '192.0.2.1', 'asn': '7922'}
+
+        with mock.patch.object(
+            self.main,
+            'get_network_check',
+            side_effect=[({'status': 'pending'}, None), (complete, None)],
+        ) as get_check, mock.patch.object(
+            self.main,
+            'grant_network_access',
+            return_value=(True, 'access granted'),
+        ), mock.patch.object(
+            self.main,
+            'delete_network_check',
+            return_value=True,
+        ), mock.patch.object(
+            self.main,
+            '_show_plex_result',
+        ), mock.patch.object(
+            self.main.shutdown_event,
+            'wait',
+            return_value=False,
+        ), mock.patch.object(self.main.time, 'monotonic', return_value=0):
+            self.main._poll_network_check('100:20', pending)
+
+        self.assertEqual(get_check.call_count, 2)
+
+    def test_poll_does_not_grant_replaced_session(self):
+        pending = {
+            'id': 'old-session',
+            'check_url': 'https://access-check.example.com/check/old-session',
+            'chat_id': 100,
+            'user_id': 20,
+            'message_id': 55,
+        }
+        replacement = {**pending, 'id': 'new-session'}
+        self.main._pending_network_checks['100:20'] = pending
+        complete = {'status': 'complete', 'ip': '192.0.2.1', 'asn': '7922'}
+
+        def replace_while_reading(_session_id):
+            self.main._pending_network_checks['100:20'] = replacement
+            return complete, None
+
+        with mock.patch.object(self.main, 'get_network_check', side_effect=replace_while_reading), \
+             mock.patch.object(self.main, 'grant_network_access') as grant_access, \
+             mock.patch.object(self.main.shutdown_event, 'wait', return_value=False), \
+             mock.patch.object(self.main.time, 'monotonic', return_value=0):
+            self.main._poll_network_check('100:20', pending)
+
+        grant_access.assert_not_called()
+        self.assertIs(self.main._pending_network_checks['100:20'], replacement)
+
+    def test_finish_network_check_shows_explicit_failure_in_same_menu(self):
+        pending = {
+            'id': 'session-id',
+            'check_url': 'https://access-check.example.com/check/session-id',
+            'chat_id': 100,
+            'user_id': 20,
+            'message_id': 55,
+        }
+        self.main._pending_network_checks['100:20'] = pending
+
+        with mock.patch.object(self.main, '_show_plex_result') as show_result:
+            self.main._finish_network_check('100:20', pending, 'Cloudflare update failed.', success=False)
+
+        show_result.assert_called_once_with(
+            100,
+            '❌ Access Not Enabled\nCloudflare update failed.',
+            user_id=20,
+            message_id=55,
+        )
+
+    def test_legacy_apply_button_explains_automatic_detection(self):
+        call = make_call(20, data='plex_detect_apply')
+        with mock.patch.object(self.main, '_show_plex_result') as show_result:
+            self.main._handle_plex_detect_apply(call)
+
+        self.assertIn('automatic', show_result.call_args.args[1])
 
     def test_nav_plex_rejects_unauthorized_user(self):
         call = make_call(30, data='nav_plex')

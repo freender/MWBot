@@ -3,30 +3,33 @@ import cfg
 import logging
 import signal
 import threading
+import time
 from datetime import timedelta
 from html import escape
 from urllib.parse import urlparse, urlunparse
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from modules import (
-    add_asn_to_firewall_rule,
     build_issue_label,
     build_mw_state,
     build_redownload_confirmation,
     create_am_silence,
+    create_network_check,
+    delete_network_check,
     disable_asn_to_firewall_rule,
     execute_redownload,
     format_duration,
-    get_asn_from_ip,
     get_firewall_status_text,
+    get_network_check,
     get_mw_status_text,
     get_open_seerr_issues,
+    grant_network_access,
     is_auth_chat_id,
     is_command,
     is_owner_chat_id,
-    is_valid_ip,
     maintain_timed_mw,
     replace_mw_state,
+    network_check_is_configured,
     register_bot_commands,
     resolve_redownload_issue,
     schedule_fw_task,
@@ -42,13 +45,14 @@ shutdown_event = threading.Event()
 
 DEFAULT_REBOOT_MW_DURATION = timedelta(minutes=5)
 DEFAULT_FIRMWARE_MW_DURATION = timedelta(minutes=5)
+NETWORK_CHECK_POLL_INTERVAL = 3
+NETWORK_CHECK_TIMEOUT = 5 * 60
 
 # -- Pending redownload targets keyed by "chat_id:user_id" --
 _pending_redownloads = {}
 
-# -- Active next-step flows keyed by chat_id -- tracks whether a flow is active
-# so Cancel can invalidate it and next-step handlers can check before running
-_active_flows = {}
+# Short-lived Worker sessions keyed by the authorized Telegram chat and user.
+_pending_network_checks = {}
 
 # -- Latest menu message keyed by chat_id -- keeps /start tidy by replacing old menu messages
 _home_menu_messages = {}
@@ -68,44 +72,6 @@ def handle_shutdown(signum, _frame):
     stop_polling = getattr(bot, 'stop_polling', None)
     if stop_polling is not None:
         stop_polling()
-
-
-def is_same_chat_user(message, expected_chat_id, expected_user_id):
-    user_id = getattr(getattr(message, 'from_user', None), 'id', None)
-    return message.chat.id == expected_chat_id and user_id == expected_user_id
-
-
-def _set_flow(chat_id, flow_name):
-    _active_flows[chat_id] = {'name': flow_name, 'message_id': None}
-
-
-def _set_flow_message(chat_id, message_id):
-    flow = _active_flows.get(chat_id)
-    if flow is not None:
-        flow['message_id'] = message_id
-
-
-def _clear_flow(chat_id):
-    _active_flows.pop(chat_id, None)
-
-
-def _check_flow(chat_id, expected_flow):
-    flow = _active_flows.get(chat_id) or {}
-    return flow.get('name') == expected_flow
-
-
-def _get_flow_message_id(chat_id):
-    flow = _active_flows.get(chat_id) or {}
-    return flow.get('message_id')
-
-
-def register_owned_next_step(sent_message, handler, expected_chat_id, expected_user_id, *handler_args):
-    def wrapped(next_message):
-        if not is_same_chat_user(next_message, expected_chat_id, expected_user_id):
-            return
-        handler(next_message, *handler_args)
-
-    bot.register_next_step_handler_by_chat_id(expected_chat_id, wrapped)
 
 
 def _get_user_id(message):
@@ -262,6 +228,13 @@ def _plex_result_markup(user_id):
         InlineKeyboardButton('⬅ Back', callback_data='nav_plex'),
         InlineKeyboardButton('🏠 Home', callback_data='nav_home'),
     )
+    return markup
+
+
+def _network_check_markup(check_url):
+    markup = InlineKeyboardMarkup(row_width=1)
+    markup.add(InlineKeyboardButton('🌐 Detect Current Network', url=check_url))
+    markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_plex'))
     return markup
 
 
@@ -496,68 +469,105 @@ def _start_redownload_flow(chat_id, user_id, message_id=None):
             )
 
 
-def _start_ip_flow(chat_id, user_id, message_id=None):
-    _set_flow(chat_id, 'ip')
-    bot.send_chat_action(chat_id, 'typing')
-    prompt_text = (
-        '📡 <b>Allow Plex</b>\n'
-        'Send your current IPv4 address.\n\n'
-        'Visit <a href="https://ipinfo.io/ip">ipinfo.io/ip</a> and paste it here.'
-    )
-    if message_id is not None:
-        _set_flow_message(chat_id, message_id)
-        _show_menu(
+def _start_network_check(chat_id, user_id, message_id=None):
+    if not network_check_is_configured():
+        _show_plex_result(
             chat_id,
-            prompt_text,
-            _cancel_markup(cancel_callback='nav_plex', cancel_label='⬅ Back'),
+            '❌ Access Not Enabled\nAutomatic network detection is not configured.',
+            user_id=user_id,
             message_id=message_id,
         )
-        sent = None
-    else:
-        sent = bot.send_message(
-            chat_id,
-            prompt_text,
-            parse_mode='HTML',
-            disable_web_page_preview=True,
-            reply_markup=_cancel_markup(),
-        )
-    register_owned_next_step(sent, ip, chat_id, user_id)
-
-
-def ip(message):
-    if not _check_flow(message.chat.id, 'ip'):
         return
-    flow_message_id = _get_flow_message_id(message.chat.id)
-    _clear_flow(message.chat.id)
 
-    ip_address = message.text
-    user_id = _get_user_id(message)
-    if not is_valid_ip(ip_address):
-        if flow_message_id is not None:
-            _show_plex_result(
-                message.chat.id,
-                'Invalid IP address format. Double-check it and try again.',
-                user_id=user_id,
-                message_id=flow_message_id,
-            )
-        else:
-            bot.send_message(message.chat.id, '❌ Invalid IP address format!\nOpen Plex Access from /start and try again.')
-    else:
-        bot.send_chat_action(message.chat.id, 'typing')
-        asn, error = get_asn_from_ip(ip_address)
-        if asn is None:
-            result_text = error or 'Unable to resolve ASN for this IP.'
-            if flow_message_id is not None:
-                _show_plex_result(message.chat.id, result_text, user_id=user_id, message_id=flow_message_id)
-            else:
-                bot.send_message(message.chat.id, text=result_text)
-        else:
-            result = add_asn_to_firewall_rule(asn)
-            result_text = result or 'Unable to update firewall rule.'
-            if flow_message_id is not None:
-                _show_plex_result(message.chat.id, result_text, user_id=user_id, message_id=flow_message_id)
-            else:
-                bot.send_message(message.chat.id, text=result_text)
+    bot.send_chat_action(chat_id, 'typing')
+    session, error = create_network_check()
+    if session is None:
+        _show_plex_result(
+            chat_id,
+            '❌ Access Not Enabled\n' + (error or 'Automatic network detection is unavailable.'),
+            user_id=user_id,
+            message_id=message_id,
+        )
+        return
+
+    key = _pending_key(chat_id, user_id)
+    pending = {
+        **session,
+        'chat_id': chat_id,
+        'user_id': user_id,
+        'message_id': message_id,
+    }
+    _pending_network_checks[key] = pending
+    pending['message_id'] = _show_menu(
+        chat_id,
+        '📡 <b>Allow Plex</b>\n'
+        '⏳ <b>Status: Waiting for network detection</b>\n\n'
+        'Open the network check while connected to the network that will use Plex or Seerr.\n\n'
+        'This menu will update with a clear success or failure result.\n'
+        'The check expires in five minutes.',
+        _network_check_markup(session['check_url']),
+        message_id=message_id,
+    ) or message_id
+    threading.Thread(target=_poll_network_check, args=(key, pending), daemon=True).start()
+
+
+def _finish_network_check(key, pending, result, success):
+    if _pending_network_checks.get(key) is not pending:
+        return
+    _pending_network_checks.pop(key, None)
+    heading = '✅ Access Enabled' if success else '❌ Access Not Enabled'
+    _show_plex_result(
+        pending['chat_id'],
+        f'{heading}\n{result}',
+        user_id=pending['user_id'],
+        message_id=pending['message_id'],
+    )
+
+
+def _poll_network_check(key, pending):
+    deadline = time.monotonic() + NETWORK_CHECK_TIMEOUT
+    while time.monotonic() < deadline and not shutdown_event.wait(NETWORK_CHECK_POLL_INTERVAL):
+        if _pending_network_checks.get(key) is not pending:
+            return
+
+        detected, error = get_network_check(pending['id'])
+        if detected is None:
+            if error and 'expired' in error.lower():
+                _finish_network_check(
+                    key,
+                    pending,
+                    'Network check expired. Select Allow Plex and try again.',
+                    success=False,
+                )
+                return
+            logging.warning('Unable to poll network detection session; retrying')
+            continue
+        if detected['status'] == 'pending':
+            continue
+        if _pending_network_checks.get(key) is not pending:
+            return
+
+        success, result = grant_network_access(detected['ip'], detected['asn'])
+        if success:
+            if not delete_network_check(pending['id']):
+                logging.warning('Unable to consume completed network detection session')
+            _finish_network_check(key, pending, result, success=True)
+            return
+
+        _finish_network_check(
+            key,
+            pending,
+            result or 'Unable to update the firewall rule.',
+            success=False,
+        )
+        return
+
+    _finish_network_check(
+        key,
+        pending,
+        'Network check expired. Select Allow Plex and try again.',
+        success=False,
+    )
 
 
 # ── Callback Queries (inline button presses) ────────────────────────
@@ -585,10 +595,9 @@ def _require_owner_callback(call):
 def _handle_cancel(call):
     chat_id = call.message.chat.id
     user_id = call.from_user.id
-    _clear_flow(chat_id)
     key = _pending_key(chat_id, user_id)
     _pending_redownloads.pop(key, None)
-    bot.clear_step_handler_by_chat_id(chat_id)
+    _pending_network_checks.pop(key, None)
     bot.edit_message_reply_markup(
         chat_id=chat_id,
         message_id=call.message.message_id,
@@ -615,6 +624,7 @@ def _handle_nav_home(call):
 def _handle_nav_plex(call):
     if not _require_auth_callback(call):
         return
+    _pending_network_checks.pop(_pending_key(call.message.chat.id, call.from_user.id), None)
     _show_plex_menu(call.message.chat.id, user_id=call.from_user.id, message_id=call.message.message_id)
 
 
@@ -633,7 +643,29 @@ def _handle_nav_mw(call):
 def _handle_plex_allow(call):
     if not _require_auth_callback(call):
         return
-    _start_ip_flow(call.message.chat.id, call.from_user.id, message_id=call.message.message_id)
+    _start_network_check(call.message.chat.id, call.from_user.id, message_id=call.message.message_id)
+
+
+def _handle_plex_allow_manual(call):
+    if not _require_auth_callback(call):
+        return
+    _show_plex_result(
+        call.message.chat.id,
+        'Manual IP entry has been retired. Select Allow Plex to detect the network automatically.',
+        user_id=call.from_user.id,
+        message_id=call.message.message_id,
+    )
+
+
+def _handle_plex_detect_apply(call):
+    if not _require_auth_callback(call):
+        return
+    _show_plex_result(
+        call.message.chat.id,
+        'Detection is now automatic. Select Allow Plex to start a new network check.',
+        user_id=call.from_user.id,
+        message_id=call.message.message_id,
+    )
 
 
 def _handle_plex_reset(call):
@@ -740,6 +772,8 @@ CALLBACK_HANDLERS = {
     'cmd_mw': _handle_nav_mw,
     'plex_allow': _handle_plex_allow,
     'cmd_ip': _handle_plex_allow,
+    'plex_allow_manual': _handle_plex_allow_manual,
+    'plex_detect_apply': _handle_plex_detect_apply,
     'plex_reset': _handle_plex_reset,
     'plex_status': _handle_plex_status,
     'media_redownload': _handle_media_redownload,

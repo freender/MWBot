@@ -1,0 +1,7 @@
+name = "mwbot-network-check"
+main = "src/index.js"
+compatibility_date = "2026-08-03"
+
+[[kv_namespaces]]
+binding = "SESSIONS"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"

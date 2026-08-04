@@ -24,6 +24,8 @@ def load_modules_package(temp_dir):
         'WAF_RULEID': 'rule',
         'CDN_URL': 'example.com',
         'MW_BOT_ASN_DEFAULT': '1234',
+        'ACCESS_CHECK_API_URL': 'https://access-check.example.com',
+        'ACCESS_CHECK_API_TOKEN': 'access-check-token',
         'TZ': 'UTC',
         'SEERR_BASE_URL': 'https://seerr.example.com',
         'SEERR_API_KEY': 'seerr-key',
@@ -46,6 +48,7 @@ def load_modules_package(temp_dir):
         'modules.common',
         'modules.firewall',
         'modules.maintenance',
+        'modules.network_check',
         'modules.redownload',
     ]:
         sys.modules.pop(name, None)
@@ -55,8 +58,9 @@ def load_modules_package(temp_dir):
     maintenance = importlib.import_module('modules.maintenance')
     redownload = importlib.import_module('modules.redownload')
     firewall = importlib.import_module('modules.firewall')
+    network_check = importlib.import_module('modules.network_check')
     setattr(maintenance, 'STATE_FILE', os.path.join(temp_dir, 'mw_state.json'))
-    return cfg, modules, maintenance, redownload, firewall
+    return cfg, modules, maintenance, redownload, firewall, network_check
 
 
 class DummyBot:
@@ -74,7 +78,7 @@ class DummyBot:
 class ModulesTest(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
-        self.cfg, self.modules, self.maintenance, self.redownload, self.firewall = load_modules_package(self.temp_dir.name)
+        self.cfg, self.modules, self.maintenance, self.redownload, self.firewall, self.network_check = load_modules_package(self.temp_dir.name)
         self.modules._seerr_access_cache.update({
             'authorized_chat_ids': set(),
             'owner_chat_ids': set(),
@@ -666,13 +670,6 @@ class ModulesTest(unittest.TestCase):
 
         self.assertEqual(bot.sent, [('200', '⚠️ NAS: Server Status\nTimed maintenance cleanup failed: boom')])
 
-    def test_is_valid_ip_uses_stdlib_parser(self):
-        self.assertTrue(self.modules.is_valid_ip('127.0.0.1'))
-        self.assertTrue(self.modules.is_valid_ip('::1'))
-        self.assertFalse(self.modules.is_valid_ip('999.999.999.999'))
-        self.assertFalse(self.modules.is_valid_ip(None))
-        self.assertFalse(self.modules.is_valid_ip(''))
-
     def test_get_rule_status_uses_shared_rule_fetch(self):
         payload = {
             'result': {
@@ -690,40 +687,99 @@ class ModulesTest(unittest.TestCase):
 
     def test_get_firewall_status_text_returns_disabled_when_rule_off(self):
         with mock.patch.object(self.firewall, 'get_rule_status', return_value=(False, None)):
-            with mock.patch.object(self.firewall, 'get_asns_from_firewall_rule') as get_asns:
+            with mock.patch.object(self.firewall, 'get_networks_from_firewall_rule') as get_networks:
                 status = self.modules.get_firewall_status_text()
 
         self.assertEqual(status, 'Plex access is disabled.')
-        get_asns.assert_not_called()
+        get_networks.assert_not_called()
 
-    def test_get_firewall_status_text_lists_temporary_asns(self):
+    def test_get_firewall_status_text_lists_temporary_networks(self):
         with mock.patch.object(self.firewall, 'get_rule_status', return_value=(True, None)):
-            with mock.patch.object(self.firewall, 'get_asns_from_firewall_rule', return_value=(['1234', '7922'], None)):
+            with mock.patch.object(
+                self.firewall,
+                'get_networks_from_firewall_rule',
+                return_value=(['192.0.2.1'], ['1234', '7922'], None),
+            ):
                 status = self.modules.get_firewall_status_text()
 
-        self.assertEqual(status, 'Plex access is enabled. Temporary ASNs: 7922.')
+        self.assertEqual(status, 'Plex access is enabled. 1 temporary IP address; ASNs: 7922.')
 
-    def test_get_asn_from_ip_parses_json_response(self):
-        response = mock.Mock()
-        response.raise_for_status.return_value = None
-        response.json.return_value = {'as': 'AS7922 Comcast Cable'}
+    def test_build_rule_payload_combines_ip_and_asn(self):
+        payload = self.firewall._build_rule_payload(['192.0.2.1', '2001:db8::1'], ['1234', '7922'], enabled=True)
 
-        with mock.patch.object(self.firewall.requests, 'get', return_value=response):
-            asn, error = self.modules.get_asn_from_ip('127.0.0.1')
+        self.assertEqual(
+            payload['expression'],
+            '((ip.src in {192.0.2.1 2001:db8::1} or ip.geoip.asnum in {1234 7922}) '
+            'and http.host wildcard "example.com")',
+        )
+        self.assertTrue(payload['enabled'])
 
-        self.assertEqual(asn, '7922')
+    def test_get_networks_from_firewall_rule_parses_ip_and_asn(self):
+        rule = {
+            'expression': '((ip.src in {192.0.2.1 2001:db8::1} or '
+                          'ip.geoip.asnum in {1234 7922}) and http.host wildcard "example.com")',
+        }
+        with mock.patch.object(self.firewall, '_get_waf_rule', return_value=(rule, None)):
+            ips, asns, error = self.modules.get_networks_from_firewall_rule()
+
+        self.assertEqual(ips, ['192.0.2.1', '2001:db8::1'])
+        self.assertEqual(asns, ['1234', '7922'])
         self.assertIsNone(error)
 
-    def test_get_asn_from_ip_rejects_missing_asn(self):
-        response = mock.Mock()
-        response.raise_for_status.return_value = None
-        response.json.return_value = {'as': ''}
+    def test_grant_network_access_adds_ip_and_asn(self):
+        update_lock = mock.MagicMock()
+        with mock.patch.object(
+            self.firewall,
+            'get_networks_from_firewall_rule',
+            return_value=([], ['1234'], None),
+        ), mock.patch.object(
+            self.firewall,
+            '_update_firewall_rule',
+            return_value=(True, None),
+        ) as update_rule, mock.patch.object(self.firewall, '_WAF_UPDATE_LOCK', update_lock):
+            success, result = self.modules.grant_network_access('192.0.2.1', '7922')
 
-        with mock.patch.object(self.firewall.requests, 'get', return_value=response):
-            asn, error = self.modules.get_asn_from_ip('127.0.0.1')
+        self.assertTrue(success)
+        self.assertIn('current IP and ISP', result)
+        expression = update_rule.call_args.args[0]['expression']
+        self.assertIn('ip.src in {192.0.2.1}', expression)
+        self.assertIn('ip.geoip.asnum in {1234 7922}', expression)
+        update_lock.__enter__.assert_called_once_with()
+        update_lock.__exit__.assert_called_once()
 
-        self.assertIsNone(asn)
-        self.assertIn('ASN for this IP is not found', error)
+    def test_create_network_check_validates_worker_response(self):
+        payload = {
+            'id': 'a' * 43,
+            'check_url': f'https://access-check.example.com/check/{"a" * 43}',
+        }
+        with mock.patch.object(self.network_check, 'request_json', return_value=payload):
+            session, error = self.modules.create_network_check()
+
+        self.assertEqual(session, payload)
+        self.assertIsNone(error)
+
+    def test_create_network_check_rejects_cross_origin_check_url(self):
+        payload = {
+            'id': 'a' * 43,
+            'check_url': f'https://attacker.example/check/{"a" * 43}',
+        }
+        with mock.patch.object(self.network_check, 'request_json', return_value=payload):
+            session, error = self.modules.create_network_check()
+
+        self.assertIsNone(session)
+        self.assertIn('invalid session', error)
+
+    def test_network_check_rejects_insecure_api_url(self):
+        with mock.patch.object(self.cfg, 'ACCESS_CHECK_API_URL', 'http://access-check.example.com'):
+            self.assertFalse(self.modules.network_check_is_configured())
+
+    def test_get_network_check_validates_complete_network(self):
+        payload = {'status': 'complete', 'ip': '2001:db8::1', 'asn': 7922}
+        with mock.patch.object(self.network_check, 'request_json', return_value=payload):
+            detected, error = self.modules.get_network_check('session-id')
+
+        self.assertEqual(detected, {'status': 'complete', 'ip': '2001:db8::1', 'asn': '7922'})
+        self.assertIsNone(error)
 
     def test_get_next_firewall_run_uses_same_day_when_before_window(self):
         current_time = datetime(2026, 3, 10, 1, 15, tzinfo=ZoneInfo('UTC'))
