@@ -93,17 +93,10 @@ SONARR4K_API_KEY = os.getenv('SONARR4K_API_KEY', SONARR_API_KEY)
 RADARR4K_BASE_URL = os.getenv('RADARR4K_BASE_URL', RADARR_BASE_URL)
 RADARR4K_API_KEY = os.getenv('RADARR4K_API_KEY', RADARR_API_KEY)
 
-# ── Alertmanager silencing ─────────────────────────────────────────────────────
+# Alertmanager maintenance
 # ALERTMANAGER_URL: base URL of the Alertmanager API, e.g. http://alertmanager:9093
-# When set, maintenance windows also create/expire Alertmanager silences.
-# MAINTENANCE_BACKENDS: comma-separated list of active backends.
-#   "kuma"          - Uptime Kuma only (default when ALERTMANAGER_URL not set)
-#   "alertmanager"  - Alertmanager silence only
-#   "kuma,alertmanager" (or "alertmanager,kuma") - dual-write
 ALERTMANAGER_URL = _get_optional('ALERTMANAGER_URL')
 ALERTMANAGER_MW_MATCHERS = _get_json('ALERTMANAGER_MW_MATCHERS') if os.getenv('ALERTMANAGER_MW_MATCHERS') else [
     {'name': 'alertname', 'value': '.+', 'isRegex': True, 'isEqual': True},
 ]
 ALERTMANAGER_OPEN_MW_DURATION = _get_duration('ALERTMANAGER_OPEN_MW_DURATION', '12h')
-_raw_backends = _get_optional('MAINTENANCE_BACKENDS', 'kuma')
-MAINTENANCE_BACKENDS = {b.strip().lower() for b in _raw_backends.split(',') if b.strip()}

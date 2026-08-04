@@ -26,6 +26,7 @@ def load_modules_package(temp_dir):
         'MW_BOT_ASN_DEFAULT': '1234',
         'ACCESS_CHECK_API_URL': 'https://access-check.example.com',
         'ACCESS_CHECK_API_TOKEN': 'access-check-token',
+        'ALERTMANAGER_URL': 'http://alertmanager.local:9093',
         'TZ': 'UTC',
         'SEERR_BASE_URL': 'https://seerr.example.com',
         'SEERR_API_KEY': 'seerr-key',
@@ -45,6 +46,7 @@ def load_modules_package(temp_dir):
     for name in [
         'cfg',
         'modules',
+        'modules.alertmanager',
         'modules.common',
         'modules.firewall',
         'modules.maintenance',
@@ -60,6 +62,7 @@ def load_modules_package(temp_dir):
     firewall = importlib.import_module('modules.firewall')
     network_check = importlib.import_module('modules.network_check')
     setattr(maintenance, 'STATE_FILE', os.path.join(temp_dir, 'mw_state.json'))
+    setattr(maintenance, 'ALERTMANAGER_STATE_FILE', os.path.join(temp_dir, 'alertmanager_mw_state.json'))
     return cfg, modules, maintenance, redownload, firewall, network_check
 
 
@@ -603,6 +606,186 @@ class ModulesTest(unittest.TestCase):
         text = self.modules.get_mw_status_text(state)
         self.assertIn('Firmware maintenance is active.', text)
         self.assertIn('Remaining:', text)
+
+    def test_start_alertmanager_mw_creates_independent_state(self):
+        with mock.patch('modules.alertmanager.create_silence', return_value='silence-1') as create_silence, \
+             mock.patch.object(self.maintenance, 'start_mw') as start_kuma_mw:
+            result = self.modules.start_alertmanager_mw(timedelta(hours=2))
+
+        self.assertIn('Alertmanager maintenance started.', result)
+        create_silence.assert_called_once_with(
+            timedelta(hours=2),
+            comment='mwbot-alertmanager-maintenance',
+        )
+        self.assertEqual(self.modules.load_alertmanager_mw_state()['silence_id'], 'silence-1')
+        self.assertIsNone(self.modules.load_mw_state())
+        start_kuma_mw.assert_not_called()
+
+    def test_start_alertmanager_mw_preserves_unverified_existing_state(self):
+        self.maintenance.save_alertmanager_mw_state({
+            'silence_id': 'silence-1',
+            'expires_at': (datetime.now(ZoneInfo(self.cfg.TZ)) + timedelta(hours=1)).isoformat(),
+            'duration': '1h',
+        })
+
+        with mock.patch('modules.alertmanager.get_silence', return_value=None), \
+             mock.patch('modules.alertmanager.create_silence') as create_silence:
+            result = self.modules.start_alertmanager_mw()
+
+        self.assertEqual(result, 'Unable to verify the existing Alertmanager maintenance window.')
+        create_silence.assert_not_called()
+        self.assertEqual(self.modules.load_alertmanager_mw_state()['silence_id'], 'silence-1')
+
+    def test_start_alertmanager_mw_does_not_duplicate_active_silence(self):
+        self.maintenance.save_alertmanager_mw_state({
+            'silence_id': 'silence-1',
+            'expires_at': (datetime.now(ZoneInfo(self.cfg.TZ)) + timedelta(hours=1)).isoformat(),
+            'duration': '1h',
+        })
+
+        with mock.patch('modules.alertmanager.get_silence', return_value={'status': {'state': 'active'}}), \
+             mock.patch('modules.alertmanager.get_alertmanager_alert_status_text', return_value='UP: Alertmanager API'), \
+             mock.patch('modules.alertmanager.create_silence') as create_silence:
+            result = self.modules.start_alertmanager_mw()
+
+        self.assertIn('Alertmanager maintenance is active.', result)
+        create_silence.assert_not_called()
+
+    def test_start_alertmanager_mw_rolls_back_when_state_save_fails(self):
+        with mock.patch('modules.alertmanager.create_silence', return_value='silence-1'), \
+             mock.patch('modules.alertmanager.expire_silence', return_value=True) as expire_silence, \
+             mock.patch.object(self.maintenance, 'save_alertmanager_mw_state', side_effect=OSError('disk full')):
+            result = self.modules.start_alertmanager_mw()
+
+        self.assertEqual(
+            result,
+            'Unable to save Alertmanager maintenance state. The silence was rolled back.',
+        )
+        expire_silence.assert_called_once_with('silence-1')
+
+    def test_alertmanager_mw_status_verifies_active_silence(self):
+        self.maintenance.save_alertmanager_mw_state({
+            'silence_id': 'silence-1',
+            'expires_at': (datetime.now(ZoneInfo(self.cfg.TZ)) + timedelta(hours=1)).isoformat(),
+            'duration': '1h',
+        })
+
+        with mock.patch('modules.alertmanager.get_silence', return_value={'status': {'state': 'active'}}), \
+             mock.patch('modules.alertmanager.get_alertmanager_alert_status_text', return_value='UP: Alertmanager API'):
+            result = self.modules.get_alertmanager_mw_status_text()
+
+        self.assertIn('UP: Alertmanager API', result)
+        self.assertIn('Alertmanager maintenance is active.', result)
+        self.assertIn('Remaining:', result)
+
+    def test_get_active_alerts_includes_suppressed_alerts(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+        payload = [{'labels': {'alertname': 'CriticalContainerMissing'}}]
+
+        with mock.patch.object(alertmanager, 'request_json', return_value=payload) as request_json:
+            result = alertmanager.get_active_alerts()
+
+        self.assertEqual(result, payload)
+        request_json.assert_called_once_with(
+            'GET',
+            'http://alertmanager.local:9093/api/v2/alerts',
+            params={
+                'active': 'true',
+                'silenced': 'true',
+                'inhibited': 'true',
+                'unprocessed': 'true',
+            },
+            timeout=10,
+        )
+
+    def test_alertmanager_status_reports_all_clear(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+
+        self.assertEqual(
+            alertmanager.format_alert_status([]),
+            'UP: Alertmanager API\nDOWN: None\nAll monitored alert conditions are clear.',
+        )
+
+    def test_alertmanager_status_sorts_and_marks_suppressed_alerts(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+        alerts = [
+            {
+                'labels': {
+                    'alertname': 'ImportantContainerMissing',
+                    'name': 'radarr',
+                    'host': 'tower',
+                    'severity': 'warning',
+                },
+                'status': {},
+            },
+            {
+                'labels': {
+                    'alertname': 'CriticalContainerMissing',
+                    'name': 'plex',
+                    'host': 'tower',
+                    'severity': 'critical',
+                },
+                'status': {'silencedBy': ['silence-1']},
+            },
+        ]
+
+        result = alertmanager.format_alert_status(alerts)
+
+        self.assertIn('DOWN: 2 active alerts (1 suppressed)', result)
+        self.assertIn('- CRITICAL plex @ tower: CriticalContainerMissing [silenced]', result)
+        self.assertIn('- WARNING radarr @ tower: ImportantContainerMissing', result)
+        self.assertLess(result.index('CRITICAL'), result.index('WARNING'))
+
+    def test_alertmanager_status_caps_long_alert_list(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+        alerts = [
+            {'labels': {'alertname': f'Alert{index}', 'name': f'app-{index}', 'severity': 'warning'}}
+            for index in range(3)
+        ]
+
+        result = alertmanager.format_alert_status(alerts, limit=2)
+
+        self.assertIn('- ...and 1 more', result)
+
+    def test_stop_alertmanager_mw_expires_silence_and_clears_state(self):
+        self.maintenance.save_alertmanager_mw_state({
+            'silence_id': 'silence-1',
+            'expires_at': (datetime.now(ZoneInfo(self.cfg.TZ)) + timedelta(hours=1)).isoformat(),
+            'duration': '1h',
+        })
+
+        with mock.patch('modules.alertmanager.expire_silence', return_value=True) as expire_silence:
+            result = self.modules.stop_alertmanager_mw()
+
+        self.assertEqual(result, 'Alertmanager maintenance completed.')
+        expire_silence.assert_called_once_with('silence-1')
+        self.assertIsNone(self.modules.load_alertmanager_mw_state())
+
+    def test_stop_alertmanager_mw_keeps_state_when_expiration_fails(self):
+        self.maintenance.save_alertmanager_mw_state({
+            'silence_id': 'silence-1',
+            'expires_at': (datetime.now(ZoneInfo(self.cfg.TZ)) + timedelta(hours=1)).isoformat(),
+            'duration': '1h',
+        })
+
+        with mock.patch('modules.alertmanager.expire_silence', return_value=False):
+            result = self.modules.stop_alertmanager_mw()
+
+        self.assertEqual(result, 'Unable to stop Alertmanager maintenance.')
+        self.assertIsNotNone(self.modules.load_alertmanager_mw_state())
+
+    def test_stop_alertmanager_mw_reports_local_cleanup_failure(self):
+        self.maintenance.save_alertmanager_mw_state({
+            'silence_id': 'silence-1',
+            'expires_at': (datetime.now(ZoneInfo(self.cfg.TZ)) + timedelta(hours=1)).isoformat(),
+            'duration': '1h',
+        })
+
+        with mock.patch('modules.alertmanager.expire_silence', return_value=True), \
+             mock.patch.object(self.maintenance, 'clear_alertmanager_mw_state', return_value=False):
+            result = self.modules.stop_alertmanager_mw()
+
+        self.assertEqual(result, 'Alertmanager maintenance completed, but local state cleanup failed.')
 
     def test_stop_timed_mw_clears_state_and_deletes_message(self):
         state = self.modules.build_mw_state(

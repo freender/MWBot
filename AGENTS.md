@@ -5,7 +5,7 @@
 - Tests: `python -m unittest tests.test_modules tests.test_main`
 - Prefer explicit error handling and focused unit tests for helper flows
 - Keep user-facing Telegram replies short and actionable
-- Maintenance flow: use `/start` as the menu-only entry point; inline buttons cover silent/regular start, reboot/firmware 5m presets, stop actions, and status
+- Maintenance flow: use `/start` as the menu-only entry point; Kuma buttons cover silent/regular start, reboot/firmware 5m presets, stop actions, and status; the separate Alertmanager MW menu owns its silence and persisted state independently
 - Redownload flow: open it from the Media menu; ask for a Seerr issue, movie, or series URL; resolve it via Seerr API; if a media URL is sent, use the latest matching Seerr issue; confirm with the user; then blacklist via queue removal first and history fallback second
 - Arr routing: standard items use `SONARR_*` / `RADARR_*`; 4K items use `SONARR4K_*` / `RADARR4K_*` when Seerr points at a 4K service
 - Deployment note: MWBot needs network reachability to `seerr`, `sonarr`, `sonarr4k`, `radarr`, and `radarr4k`; on helm this is done by attaching the container to `net_overlay`

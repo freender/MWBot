@@ -1,10 +1,11 @@
 # MWBot
 
-MWBot is a Telegram bot designed to manage maintenance windows (MW) in Uptime Kuma and notify a specified Telegram chat. It uses a menu-first Telegram flow, with `/start` opening the inline button menu for all supported actions.
+MWBot is a Telegram bot designed to manage independent maintenance windows (MW) in Uptime Kuma and Alertmanager and notify a specified Telegram chat. It uses a menu-first Telegram flow, with `/start` opening the inline button menu for all supported actions.
 
 ## Features
 
 - Start and stop maintenance windows in Uptime Kuma.
+- Independently start and stop Alertmanager maintenance silences, with API health and active-alert status.
 - Manage maintenance windows from the `/start` menu with quick actions for silent, regular, reboot, and firmware flows.
 - Auto-stop timed maintenance windows and clean up the notification message when the window completes successfully.
 - Notify a dedicated Telegram channel about maintenance activities.
@@ -33,6 +34,9 @@ services:
       - KUMA_LOGIN=${UPTIME_LOGIN} # Uptime Kuma login
       - KUMA_PASSWORD=${UPTIME_PASSWORD} # Uptime Kuma password
       - KUMA_MW_ID=${UPTIME_MW_ID} # ID of the maintenance window to manage
+      - ALERTMANAGER_URL=${ALERTMANAGER_URL} # Optional Alertmanager API base URL
+      - ALERTMANAGER_MW_MATCHERS=${ALERTMANAGER_MW_MATCHERS} # Optional silence matcher JSON
+      - ALERTMANAGER_OPEN_MW_DURATION=${ALERTMANAGER_OPEN_MW_DURATION} # Optional safety expiry; defaults to 12h
       - WAF_TOKEN=${WAF_TOKEN} # Cloudflare WAF API token
       - WAF_ZONE=${WAF_ZONE} # Cloudflare WAF zone ID
       - WAF_RULESET=${WAF_RULESET} # Cloudflare WAF ruleset ID
@@ -63,6 +67,9 @@ services:
 - `KUMA_LOGIN`: The login username for Uptime Kuma.
 - `KUMA_PASSWORD`: The password for Uptime Kuma.
 - `KUMA_MW_ID`: The ID of the maintenance window to manage in Uptime Kuma.
+- `ALERTMANAGER_URL`: Optional Alertmanager API base URL used by the separate Alertmanager maintenance menu.
+- `ALERTMANAGER_MW_MATCHERS`: Optional JSON array of Alertmanager silence matchers. Defaults to all alerts.
+- `ALERTMANAGER_OPEN_MW_DURATION`: Alertmanager maintenance safety expiry. Defaults to `12h`.
 - `WAF_TOKEN`: The API token for Cloudflare WAF.
 - `WAF_ZONE`: The zone ID for Cloudflare WAF.
 - `WAF_RULESET`: The ruleset ID for Cloudflare WAF.
@@ -87,8 +94,9 @@ services:
 
 1. **Open the Bot**: Use `/start` to open the main menu.
 2. **Manage Maintenance Windows**:
-   - Open the Maintenance section from the menu.
-   - Use the inline buttons for silent start, regular start, reboot 5m, firmware 5m, silent stop, stop + notify, and status.
+    - Open Kuma MW for the existing Uptime Kuma maintenance flow.
+    - Use the inline buttons for silent start, regular start, reboot 5m, firmware 5m, silent stop, stop + notify, and status.
+    - Use Alertmanager MW to independently start, stop, or inspect an Alertmanager silence.
 3. **Plex Access**: Open the Plex Access section and tap the network-check link. MWBot applies the detected ISP ASN automatically, then updates the same menu with an explicit success or failure result.
 4. **Redownload Control**: Open the Media section and follow the prompts. The bot confirms the target, then blocklists the matching release in Sonarr or Radarr so it is not downloaded again.
 
@@ -115,6 +123,7 @@ services:
 ## Timed Maintenance Windows
 
 - Timed maintenance windows are persisted to `/config/mw_state.json`.
+- Alertmanager maintenance state is persisted separately to `/config/alertmanager_mw_state.json`.
 - When a timed maintenance window expires, the bot stops the Uptime Kuma maintenance window automatically.
 - If the maintenance notification was sent to the notification chat, the bot deletes that message after a successful timed completion to keep the channel clean.
 - Failure messages are left in chat so cleanup problems remain visible.

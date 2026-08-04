@@ -14,13 +14,13 @@ from modules import (
     build_mw_state,
     build_redownload_confirmation,
     clear_seerr_read_caches,
-    create_am_silence,
     create_network_check,
     delete_network_check,
     disable_asn_to_firewall_rule,
     execute_redownload,
     format_duration,
     get_firewall_status_text,
+    get_alertmanager_mw_status_text,
     get_network_check,
     get_mw_status_text,
     get_open_seerr_issues,
@@ -34,7 +34,9 @@ from modules import (
     register_bot_commands,
     resolve_redownload_issue,
     schedule_fw_task,
+    start_alertmanager_mw,
     start_mw,
+    stop_alertmanager_mw,
     stop_timed_mw,
     warm_seerr_access_cache,
 )
@@ -171,7 +173,10 @@ def _home_markup(user_id):
             InlineKeyboardButton('🎬 Media', callback_data='nav_media'),
         )
     if is_owner_chat_id(user_id):
-        markup.add(InlineKeyboardButton('🔧 Maintenance', callback_data='nav_mw'))
+        markup.add(
+            InlineKeyboardButton('🔧 Kuma MW', callback_data='nav_mw'),
+            InlineKeyboardButton('🔕 Alertmanager MW', callback_data='nav_am_mw'),
+        )
     markup.add(InlineKeyboardButton('✖ Close', callback_data='menu_close'))
     return markup
 
@@ -213,6 +218,19 @@ def _maintenance_markup():
     )
     markup.add(
         InlineKeyboardButton('📋 Status', callback_data='mw_status'),
+        InlineKeyboardButton('⬅ Back', callback_data='nav_home'),
+    )
+    return markup
+
+
+def _alertmanager_mw_markup():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton('▶ Start', callback_data='am_mw_start'),
+        InlineKeyboardButton('⏹ Stop', callback_data='am_mw_stop'),
+    )
+    markup.add(
+        InlineKeyboardButton('📋 Status', callback_data='am_mw_status'),
         InlineKeyboardButton('⬅ Back', callback_data='nav_home'),
     )
     return markup
@@ -263,6 +281,16 @@ def _maintenance_result_markup():
     markup.add(
         InlineKeyboardButton('📋 Status', callback_data='mw_status'),
         InlineKeyboardButton('⬅ Back', callback_data='nav_mw'),
+    )
+    markup.add(InlineKeyboardButton('🏠 Home', callback_data='nav_home'))
+    return markup
+
+
+def _alertmanager_mw_result_markup():
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton('📋 Status', callback_data='am_mw_status'),
+        InlineKeyboardButton('⬅ Back', callback_data='nav_am_mw'),
     )
     markup.add(InlineKeyboardButton('🏠 Home', callback_data='nav_home'))
     return markup
@@ -320,12 +348,25 @@ def _show_media_menu(chat_id, message_id=None):
 def _show_maintenance_menu(chat_id, message_id=None):
     _show_menu(
         chat_id,
-        '🔧 <b>Maintenance</b>\n'
-        'Quick actions for the common MW flows.\n\n'
+        '🔧 <b>Kuma Maintenance</b>\n'
+        'Manage Uptime Kuma without changing Alertmanager.\n\n'
         '- Silent and regular starts stay open until you stop them\n'
         '- Reboot and firmware auto-stop after 5m\n'
         '- Use the buttons below for the common maintenance actions',
         _maintenance_markup(),
+        message_id=message_id,
+    )
+
+
+def _show_alertmanager_mw_menu(chat_id, message_id=None):
+    _show_menu(
+        chat_id,
+        '🔕 <b>Alertmanager Maintenance</b>\n'
+        'Silence Alertmanager notifications without changing Uptime Kuma.\n\n'
+        f'- Start uses a {format_duration(cfg.ALERTMANAGER_OPEN_MW_DURATION)} safety expiry\n'
+        '- Status shows API health, active alerts, and maintenance state\n'
+        '- Stop completes the active Alertmanager window',
+        _alertmanager_mw_markup(),
         message_id=message_id,
     )
 
@@ -352,25 +393,27 @@ def _show_media_result(chat_id, text, message_id=None):
 def _show_maintenance_result(chat_id, text, message_id=None):
     _show_menu(
         chat_id,
-        '🔧 <b>Maintenance</b>\n' + escape(text),
+        '🔧 <b>Kuma Maintenance</b>\n' + escape(text),
         _maintenance_result_markup(),
+        message_id=message_id,
+    )
+
+
+def _show_alertmanager_mw_result(chat_id, text, message_id=None):
+    _show_menu(
+        chat_id,
+        '🔕 <b>Alertmanager Maintenance</b>\n' + escape(text),
+        _alertmanager_mw_result_markup(),
         message_id=message_id,
     )
 
 
 def _start_silent_mw(duration=None, default_duration=None, reason='Silent maintenance window'):
     selected_duration = duration if duration is not None else default_duration
-    silence_duration = selected_duration or cfg.ALERTMANAGER_OPEN_MW_DURATION
     result = start_mw()
-    if result == 'MW has been started':
-        silence_id = create_am_silence(silence_duration, reason=reason)
-        replace_mw_state(bot, build_mw_state(silence_duration, reason=reason,
-                                              alertmanager_silence_id=silence_id,
-                                              auto_stop=selected_duration is not None))
     if result == 'MW has been started' and selected_duration is not None:
+        replace_mw_state(bot, build_mw_state(selected_duration, reason=reason))
         return f'{result}. Timed stop scheduled in {format_duration(selected_duration)}.'
-    if result == 'MW has been started' and silence_id:
-        return f'{result}. Alertmanager silence created for {format_duration(silence_duration)}; use Stop to complete MW.'
     return result
 
 
@@ -385,13 +428,11 @@ def _start_notified_mw(notification_text, duration=None, default_duration=None, 
     if selected_duration is None:
         return status
 
-    silence_id = create_am_silence(selected_duration, reason=reason)
     state = build_mw_state(
         selected_duration,
         notify_chat_id=cfg.NOTIFY_CHAT_ID,
         notify_message_id=notify_message.message_id,
         reason=reason,
-        alertmanager_silence_id=silence_id,
     )
     replace_mw_state(bot, state)
     return f'{status}. Timed stop scheduled in {format_duration(selected_duration)}.'
@@ -664,6 +705,12 @@ def _handle_nav_mw(call):
     _show_maintenance_menu(call.message.chat.id, message_id=call.message.message_id)
 
 
+def _handle_nav_alertmanager_mw(call):
+    if not _require_owner_callback(call):
+        return
+    _show_alertmanager_mw_menu(call.message.chat.id, message_id=call.message.message_id)
+
+
 def _handle_plex_allow(call):
     if not _require_auth_callback(call):
         return
@@ -786,6 +833,31 @@ def _handle_mw_status(call):
     _handle_mw_action(call, get_mw_status_text())
 
 
+def _handle_alertmanager_mw_action(call, result):
+    _show_alertmanager_mw_result(call.message.chat.id, result, message_id=call.message.message_id)
+
+
+def _handle_alertmanager_mw_start(call):
+    if not _require_owner_callback(call):
+        return
+    bot.send_chat_action(call.message.chat.id, 'typing')
+    _handle_alertmanager_mw_action(call, start_alertmanager_mw())
+
+
+def _handle_alertmanager_mw_stop(call):
+    if not _require_owner_callback(call):
+        return
+    bot.send_chat_action(call.message.chat.id, 'typing')
+    _handle_alertmanager_mw_action(call, stop_alertmanager_mw())
+
+
+def _handle_alertmanager_mw_status(call):
+    if not _require_owner_callback(call):
+        return
+    bot.send_chat_action(call.message.chat.id, 'typing')
+    _handle_alertmanager_mw_action(call, get_alertmanager_mw_status_text())
+
+
 CALLBACK_HANDLERS = {
     'cancel': _handle_cancel,
     'menu_close': _handle_menu_close,
@@ -793,6 +865,7 @@ CALLBACK_HANDLERS = {
     'nav_plex': _handle_nav_plex,
     'nav_media': _handle_nav_media,
     'nav_mw': _handle_nav_mw,
+    'nav_am_mw': _handle_nav_alertmanager_mw,
     'cmd_mw': _handle_nav_mw,
     'plex_allow': _handle_plex_allow,
     'cmd_ip': _handle_plex_allow,
@@ -809,6 +882,9 @@ CALLBACK_HANDLERS = {
     'mw_stop_silent': _handle_mw_stop_silent,
     'mw_stop_regular': _handle_mw_stop_regular,
     'mw_status': _handle_mw_status,
+    'am_mw_start': _handle_alertmanager_mw_start,
+    'am_mw_stop': _handle_alertmanager_mw_stop,
+    'am_mw_status': _handle_alertmanager_mw_status,
 }
 
 

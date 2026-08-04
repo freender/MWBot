@@ -14,18 +14,12 @@ import cfg
 
 
 STATE_FILE = '/config/mw_state.json'
+ALERTMANAGER_STATE_FILE = '/config/alertmanager_mw_state.json'
 STATE_LOCK = threading.Lock()
+ALERTMANAGER_ACTION_LOCK = threading.RLock()
 
 KUMA_TIMEOUT = 3
 KUMA_MAX_ATTEMPTS = 2
-
-
-def _kuma_backend_enabled():
-    return 'kuma' in cfg.MAINTENANCE_BACKENDS
-
-
-def _am_backend_enabled():
-    return bool(cfg.ALERTMANAGER_URL) and 'alertmanager' in cfg.MAINTENANCE_BACKENDS
 
 
 def parse_duration(text):
@@ -118,6 +112,38 @@ def clear_mw_state():
             logging.error('Unable to clear MW state: %s', exc)
 
 
+def load_alertmanager_mw_state():
+    with STATE_LOCK:
+        if not os.path.exists(ALERTMANAGER_STATE_FILE):
+            return None
+        try:
+            with open(ALERTMANAGER_STATE_FILE, 'r', encoding='utf-8') as handle:
+                return json.load(handle)
+        except (OSError, json.JSONDecodeError) as exc:
+            logging.error('Unable to read Alertmanager MW state: %s', exc)
+            return None
+
+
+def save_alertmanager_mw_state(state):
+    with STATE_LOCK:
+        _ensure_state_dir()
+        temp_file = f'{ALERTMANAGER_STATE_FILE}.tmp'
+        with open(temp_file, 'w', encoding='utf-8') as handle:
+            json.dump(state, handle)
+        os.replace(temp_file, ALERTMANAGER_STATE_FILE)
+
+
+def clear_alertmanager_mw_state():
+    with STATE_LOCK:
+        try:
+            if os.path.exists(ALERTMANAGER_STATE_FILE):
+                os.remove(ALERTMANAGER_STATE_FILE)
+            return True
+        except OSError as exc:
+            logging.error('Unable to clear Alertmanager MW state: %s', exc)
+            return False
+
+
 def build_mw_state(duration, notify_chat_id=None, notify_message_id=None, reason=None,
                    alertmanager_silence_id=None, auto_stop=True):
     expires_at = datetime.now(ZoneInfo(cfg.TZ)) + duration
@@ -198,7 +224,7 @@ def stop_mw():
 
 def create_am_silence(duration, reason=None):
     """Create an Alertmanager silence for the given duration.  Returns silence ID or None."""
-    if not _am_backend_enabled():
+    if not cfg.ALERTMANAGER_URL:
         return None
     from modules.alertmanager import create_silence
     comment = reason or 'mwbot-maintenance'
@@ -209,13 +235,126 @@ def create_am_silence(duration, reason=None):
 
 
 def expire_am_silence(silence_id):
-    """Expire an Alertmanager silence by ID.  No-op if ID is None or backend disabled."""
+    """Expire a legacy Alertmanager silence by ID when Alertmanager is configured."""
     if not silence_id:
         return
-    if not _am_backend_enabled():
+    if not cfg.ALERTMANAGER_URL:
         return
     from modules.alertmanager import expire_silence
     expire_silence(silence_id)
+
+
+def start_alertmanager_mw(duration=None):
+    with ALERTMANAGER_ACTION_LOCK:
+        return _start_alertmanager_mw(duration)
+
+
+def _start_alertmanager_mw(duration=None):
+    if not cfg.ALERTMANAGER_URL:
+        return 'Alertmanager maintenance is not configured.'
+
+    from modules.alertmanager import create_silence, expire_silence, get_silence
+
+    existing_state = load_alertmanager_mw_state()
+    if existing_state:
+        silence = get_silence(existing_state.get('silence_id'))
+        silence_state = (silence or {}).get('status', {}).get('state')
+        if silence_state in ('active', 'pending'):
+            return get_alertmanager_mw_status_text(existing_state)
+        if silence_state != 'expired':
+            return 'Unable to verify the existing Alertmanager maintenance window.'
+
+    selected_duration = duration or cfg.ALERTMANAGER_OPEN_MW_DURATION
+    silence_id = create_silence(selected_duration, comment='mwbot-alertmanager-maintenance')
+    if not silence_id:
+        return 'Unable to start Alertmanager maintenance.'
+
+    expires_at = datetime.now(ZoneInfo(cfg.TZ)) + selected_duration
+    try:
+        save_alertmanager_mw_state({
+            'silence_id': silence_id,
+            'expires_at': expires_at.isoformat(),
+            'duration': format_duration(selected_duration),
+        })
+    except OSError as exc:
+        logging.error('Unable to save Alertmanager MW state: %s', exc)
+        if expire_silence(silence_id):
+            return 'Unable to save Alertmanager maintenance state. The silence was rolled back.'
+        return (
+            'Alertmanager maintenance started, but its state could not be saved.\n'
+            f"Safety expiry: {expires_at.strftime('%Y-%m-%d %H:%M %Z')}"
+        )
+    return (
+        'Alertmanager maintenance started.\n'
+        f"Safety expiry: {expires_at.strftime('%Y-%m-%d %H:%M %Z')}"
+    )
+
+
+def stop_alertmanager_mw():
+    with ALERTMANAGER_ACTION_LOCK:
+        return _stop_alertmanager_mw()
+
+
+def _stop_alertmanager_mw():
+    state = load_alertmanager_mw_state()
+    if not state:
+        return 'No Alertmanager maintenance window is active.'
+    if not cfg.ALERTMANAGER_URL:
+        return 'Alertmanager maintenance is not configured.'
+
+    from modules.alertmanager import expire_silence
+
+    if not expire_silence(state.get('silence_id')):
+        return 'Unable to stop Alertmanager maintenance.'
+
+    if not clear_alertmanager_mw_state():
+        return 'Alertmanager maintenance completed, but local state cleanup failed.'
+    return 'Alertmanager maintenance completed.'
+
+
+def get_alertmanager_mw_status_text(state=None):
+    with ALERTMANAGER_ACTION_LOCK:
+        from modules.alertmanager import get_alertmanager_alert_status_text
+
+        alert_status = get_alertmanager_alert_status_text()
+        maintenance_status = _get_alertmanager_mw_status_text(state)
+        return f'{alert_status}\n\n{maintenance_status}'
+
+
+def _get_alertmanager_mw_status_text(state=None):
+    active_state = state or load_alertmanager_mw_state()
+    if not active_state:
+        return 'No Alertmanager maintenance window is active.'
+    if not cfg.ALERTMANAGER_URL:
+        return 'Alertmanager maintenance is not configured.'
+
+    expires_at = datetime.fromisoformat(active_state['expires_at'])
+    remaining = expires_at - datetime.now(ZoneInfo(cfg.TZ))
+    if remaining.total_seconds() <= 0:
+        if not clear_alertmanager_mw_state():
+            return 'Alertmanager maintenance expired, but local state cleanup failed.'
+        return 'No Alertmanager maintenance window is active.'
+
+    from modules.alertmanager import get_silence
+
+    silence = get_silence(active_state.get('silence_id'))
+    if not silence:
+        return (
+            'Unable to verify the Alertmanager maintenance window.\n'
+            f"Local safety expiry: {expires_at.strftime('%Y-%m-%d %H:%M %Z')}"
+        )
+
+    silence_state = silence.get('status', {}).get('state')
+    if silence_state == 'expired':
+        if not clear_alertmanager_mw_state():
+            return 'Alertmanager maintenance expired, but local state cleanup failed.'
+        return 'No Alertmanager maintenance window is active.'
+
+    return (
+        'Alertmanager maintenance is active.\n'
+        f"Safety expiry: {expires_at.strftime('%Y-%m-%d %H:%M %Z')}\n"
+        f'Remaining: {format_duration(remaining)}'
+    )
 
 
 def stop_timed_mw(bot, notify_on_success=False):
@@ -227,12 +366,8 @@ def stop_timed_mw(bot, notify_on_success=False):
             state.get('expires_at'),
         )
 
-    kuma_success = True
-    if _kuma_backend_enabled():
-        result = stop_mw()
-        kuma_success = result == 'MW has been completed'
-    else:
-        result = 'MW has been completed'
+    result = stop_mw()
+    kuma_success = result == 'MW has been completed'
 
     am_silence_id = (state or {}).get('alertmanager_silence_id')
     if am_silence_id:

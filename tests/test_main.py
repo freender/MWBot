@@ -71,6 +71,7 @@ def load_main_module(temp_dir):
         'MW_BOT_ASN_DEFAULT': '1234',
         'ACCESS_CHECK_API_URL': 'https://access-check.example.com',
         'ACCESS_CHECK_API_TOKEN': 'access-check-token',
+        'ALERTMANAGER_URL': 'http://alertmanager.local:9093',
         'TZ': 'UTC',
         'SEERR_BASE_URL': 'https://seerr.example.com',
         'SEERR_PUBLIC_URL': 'https://seerr.example.com',
@@ -91,6 +92,7 @@ def load_main_module(temp_dir):
     for name in [
         'cfg',
         'modules',
+        'modules.alertmanager',
         'modules.common',
         'modules.firewall',
         'modules.maintenance',
@@ -105,6 +107,7 @@ def load_main_module(temp_dir):
         modules = importlib.import_module('modules')
         maintenance = importlib.import_module('modules.maintenance')
         setattr(maintenance, 'STATE_FILE', os.path.join(temp_dir, 'mw_state.json'))
+        setattr(maintenance, 'ALERTMANAGER_STATE_FILE', os.path.join(temp_dir, 'alertmanager_mw_state.json'))
         main = importlib.import_module('main')
 
     return cfg, modules, main
@@ -158,7 +161,8 @@ class MainAuthTest(unittest.TestCase):
         self.assertIn('Choose a section', text)
         self.assertIn('📡 Plex Access', labels)
         self.assertIn('🎬 Media', labels)
-        self.assertNotIn('🔧 Maintenance', labels)
+        self.assertNotIn('🔧 Kuma MW', labels)
+        self.assertNotIn('🔕 Alertmanager MW', labels)
 
     def test_home_menu_shows_all_sections_for_owner(self):
         with mock.patch.object(self.main, '_show_menu') as show_menu:
@@ -168,7 +172,8 @@ class MainAuthTest(unittest.TestCase):
 
         self.assertIn('📡 Plex Access', labels)
         self.assertIn('🎬 Media', labels)
-        self.assertIn('🔧 Maintenance', labels)
+        self.assertIn('🔧 Kuma MW', labels)
+        self.assertIn('🔕 Alertmanager MW', labels)
 
     def test_home_menu_tracks_latest_message_id(self):
         with mock.patch.object(self.main, '_show_menu', return_value=77) as show_menu:
@@ -459,6 +464,24 @@ class MainAuthTest(unittest.TestCase):
         show_maintenance_menu.assert_called_once_with(100, message_id=55)
         answer_callback_query.assert_called_once_with('call-id')
 
+    def test_nav_alertmanager_mw_rejects_authorized_non_owner(self):
+        call = make_call(20, data='nav_am_mw')
+
+        with mock.patch.object(self.main, '_show_alertmanager_mw_menu') as show_menu, \
+             mock.patch.object(self.main, '_answer_not_allowed') as answer_not_allowed:
+            self.main._handle_nav_alertmanager_mw(call)
+
+        show_menu.assert_not_called()
+        answer_not_allowed.assert_called_once_with(100)
+
+    def test_nav_alertmanager_mw_allows_owner(self):
+        call = make_call(10, data='nav_am_mw')
+
+        with mock.patch.object(self.main, '_show_alertmanager_mw_menu') as show_menu:
+            self.main._handle_nav_alertmanager_mw(call)
+
+        show_menu.assert_called_once_with(100, message_id=55)
+
     def test_plex_reset_rejects_authorized_non_owner(self):
         call = make_call(20, data='plex_reset')
 
@@ -641,6 +664,34 @@ class MainAuthTest(unittest.TestCase):
         stop_silent.assert_not_called()
         stop_notified.assert_not_called()
         get_status.assert_not_called()
+
+    def test_owner_only_alertmanager_callbacks_reject_authorized_non_owner(self):
+        call = make_call(20)
+        handlers = [
+            self.main._handle_alertmanager_mw_start,
+            self.main._handle_alertmanager_mw_stop,
+            self.main._handle_alertmanager_mw_status,
+        ]
+
+        with mock.patch.object(self.main, 'start_alertmanager_mw') as start_mw, \
+             mock.patch.object(self.main, 'stop_alertmanager_mw') as stop_mw, \
+             mock.patch.object(self.main, 'get_alertmanager_mw_status_text') as get_status:
+            for handler in handlers:
+                handler(call)
+
+        start_mw.assert_not_called()
+        stop_mw.assert_not_called()
+        get_status.assert_not_called()
+
+    def test_alertmanager_start_callback_allows_owner(self):
+        call = make_call(10, data='am_mw_start')
+
+        with mock.patch.object(self.main, 'start_alertmanager_mw', return_value='started') as start_mw, \
+             mock.patch.object(self.main, '_handle_alertmanager_mw_action') as handle_action:
+            self.main._handle_alertmanager_mw_start(call)
+
+        start_mw.assert_called_once_with()
+        handle_action.assert_called_once_with(call, 'started')
 
 
 if __name__ == '__main__':
