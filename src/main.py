@@ -16,6 +16,7 @@ from modules import (
     delete_network_check,
     disable_asn_to_firewall_rule,
     execute_redownload,
+    format_duration,
     get_firewall_status_text,
     get_alertmanager_mw_status_text,
     get_network_check,

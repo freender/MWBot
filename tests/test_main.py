@@ -458,6 +458,12 @@ class MainAuthTest(unittest.TestCase):
 
         show_menu.assert_called_once_with(100, message_id=55)
 
+    def test_alertmanager_mw_menu_renders_configured_duration(self):
+        with mock.patch.object(self.main, '_show_menu') as show_menu:
+            self.main._show_alertmanager_mw_menu(100)
+
+        self.assertIn('12h', show_menu.call_args.args[1])
+
     def test_plex_reset_rejects_authorized_non_owner(self):
         call = make_call(20, data='plex_reset')
 
