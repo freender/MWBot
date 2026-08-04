@@ -4,40 +4,32 @@ import logging
 import signal
 import threading
 import time
-from datetime import timedelta
 from html import escape
 from urllib.parse import urlparse, urlunparse
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 from modules import (
     build_issue_label,
-    build_mw_state,
     build_redownload_confirmation,
     clear_seerr_read_caches,
     create_network_check,
     delete_network_check,
     disable_asn_to_firewall_rule,
     execute_redownload,
-    format_duration,
     get_firewall_status_text,
     get_alertmanager_mw_status_text,
     get_network_check,
-    get_mw_status_text,
     get_open_seerr_issues,
     grant_network_access,
     is_auth_chat_id,
     is_command,
     is_owner_chat_id,
-    maintain_timed_mw,
-    replace_mw_state,
     network_check_is_configured,
     register_bot_commands,
     resolve_redownload_issue,
     schedule_fw_task,
     start_alertmanager_mw,
-    start_mw,
     stop_alertmanager_mw,
-    stop_timed_mw,
     warm_seerr_access_cache,
 )
 
@@ -46,8 +38,6 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(mess
 bot = telebot.TeleBot(cfg.TOKEN)
 shutdown_event = threading.Event()
 
-DEFAULT_REBOOT_MW_DURATION = timedelta(minutes=5)
-DEFAULT_FIRMWARE_MW_DURATION = timedelta(minutes=5)
 NETWORK_CHECK_POLL_INTERVAL = 1
 NETWORK_CHECK_TIMEOUT = 5 * 60
 
@@ -65,8 +55,6 @@ def start_background_threads(active_bot):
     scheduler_thread = threading.Thread(target=schedule_fw_task, args=(shutdown_event,), daemon=True)
     scheduler_thread.start()
 
-    timed_mw_thread = threading.Thread(target=maintain_timed_mw, args=(active_bot,), kwargs={'shutdown_event': shutdown_event}, daemon=True)
-    timed_mw_thread.start()
 
 
 def handle_shutdown(signum, _frame):
@@ -174,7 +162,6 @@ def _home_markup(user_id):
         )
     if is_owner_chat_id(user_id):
         markup.add(
-            InlineKeyboardButton('🔧 Kuma MW', callback_data='nav_mw'),
             InlineKeyboardButton('🔕 Alertmanager MW', callback_data='nav_am_mw'),
         )
     markup.add(InlineKeyboardButton('✖ Close', callback_data='menu_close'))
@@ -199,27 +186,6 @@ def _media_markup():
     if seerr_browser_url:
         markup.add(InlineKeyboardButton('🌐 Open Seerr', url=seerr_browser_url))
     markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_home'))
-    return markup
-
-
-def _maintenance_markup():
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton('🙈 Silent Start', callback_data='mw_start_silent'),
-        InlineKeyboardButton('📢 Regular Start', callback_data='mw_start_regular'),
-    )
-    markup.add(
-        InlineKeyboardButton('🔁 Reboot 5m', callback_data='mw_reboot_default'),
-        InlineKeyboardButton('💾 Firmware 5m', callback_data='mw_firmware_default'),
-    )
-    markup.add(
-        InlineKeyboardButton('⏹ Silent Stop', callback_data='mw_stop_silent'),
-        InlineKeyboardButton('✅ Stop + Notify', callback_data='mw_stop_regular'),
-    )
-    markup.add(
-        InlineKeyboardButton('📋 Status', callback_data='mw_status'),
-        InlineKeyboardButton('⬅ Back', callback_data='nav_home'),
-    )
     return markup
 
 
@@ -273,16 +239,6 @@ def _media_result_markup():
         InlineKeyboardButton('⬅ Back', callback_data='nav_media'),
         InlineKeyboardButton('🏠 Home', callback_data='nav_home'),
     )
-    return markup
-
-
-def _maintenance_result_markup():
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton('📋 Status', callback_data='mw_status'),
-        InlineKeyboardButton('⬅ Back', callback_data='nav_mw'),
-    )
-    markup.add(InlineKeyboardButton('🏠 Home', callback_data='nav_home'))
     return markup
 
 
@@ -345,24 +301,11 @@ def _show_media_menu(chat_id, message_id=None):
     )
 
 
-def _show_maintenance_menu(chat_id, message_id=None):
-    _show_menu(
-        chat_id,
-        '🔧 <b>Kuma Maintenance</b>\n'
-        'Manage Uptime Kuma without changing Alertmanager.\n\n'
-        '- Silent and regular starts stay open until you stop them\n'
-        '- Reboot and firmware auto-stop after 5m\n'
-        '- Use the buttons below for the common maintenance actions',
-        _maintenance_markup(),
-        message_id=message_id,
-    )
-
-
 def _show_alertmanager_mw_menu(chat_id, message_id=None):
     _show_menu(
         chat_id,
         '🔕 <b>Alertmanager Maintenance</b>\n'
-        'Silence Alertmanager notifications without changing Uptime Kuma.\n\n'
+        'Silence Alertmanager notifications during maintenance.\n\n'
         f'- Start uses a {format_duration(cfg.ALERTMANAGER_OPEN_MW_DURATION)} safety expiry\n'
         '- Status shows API health, active alerts, and maintenance state\n'
         '- Stop completes the active Alertmanager window',
@@ -390,15 +333,6 @@ def _show_media_result(chat_id, text, message_id=None):
     )
 
 
-def _show_maintenance_result(chat_id, text, message_id=None):
-    _show_menu(
-        chat_id,
-        '🔧 <b>Kuma Maintenance</b>\n' + escape(text),
-        _maintenance_result_markup(),
-        message_id=message_id,
-    )
-
-
 def _show_alertmanager_mw_result(chat_id, text, message_id=None):
     _show_menu(
         chat_id,
@@ -406,49 +340,6 @@ def _show_alertmanager_mw_result(chat_id, text, message_id=None):
         _alertmanager_mw_result_markup(),
         message_id=message_id,
     )
-
-
-def _start_silent_mw(duration=None, default_duration=None, reason='Silent maintenance window'):
-    selected_duration = duration if duration is not None else default_duration
-    result = start_mw()
-    if result == 'MW has been started' and selected_duration is not None:
-        replace_mw_state(bot, build_mw_state(selected_duration, reason=reason))
-        return f'{result}. Timed stop scheduled in {format_duration(selected_duration)}.'
-    return result
-
-
-def _start_notified_mw(notification_text, duration=None, default_duration=None, reason='Maintenance window'):
-    selected_duration = duration if duration is not None else default_duration
-    result = start_mw()
-    if result != 'MW has been started':
-        return result
-
-    notify_message = bot.send_message(chat_id=cfg.NOTIFY_CHAT_ID, text=notification_text)
-    status = result + '. Sev1 chat has been notified'
-    if selected_duration is None:
-        return status
-
-    state = build_mw_state(
-        selected_duration,
-        notify_chat_id=cfg.NOTIFY_CHAT_ID,
-        notify_message_id=notify_message.message_id,
-        reason=reason,
-    )
-    replace_mw_state(bot, state)
-    return f'{status}. Timed stop scheduled in {format_duration(selected_duration)}.'
-
-
-def _stop_silent_mw():
-    result, _success = stop_timed_mw(bot)
-    return result
-
-
-def _stop_notified_mw():
-    result, success = stop_timed_mw(bot)
-    if success:
-        bot.send_message(chat_id=cfg.NOTIFY_CHAT_ID, text='✅ NAS: Server Status\nMaintenance window has been completed')
-        return result + '. Sev1 chat has been notified'
-    return result
 
 
 # ── Menu entry points ────────────────────────────────────────────────
@@ -699,12 +590,6 @@ def _handle_nav_media(call):
     _show_media_menu(call.message.chat.id, message_id=call.message.message_id)
 
 
-def _handle_nav_mw(call):
-    if not _require_owner_callback(call):
-        return
-    _show_maintenance_menu(call.message.chat.id, message_id=call.message.message_id)
-
-
 def _handle_nav_alertmanager_mw(call):
     if not _require_owner_callback(call):
         return
@@ -772,67 +657,6 @@ def _handle_media_redownload(call):
     _start_redownload_flow(call.message.chat.id, call.from_user.id, message_id=call.message.message_id)
 
 
-def _handle_mw_action(call, result):
-    _show_maintenance_result(call.message.chat.id, result, message_id=call.message.message_id)
-
-
-def _handle_mw_start_silent(call):
-    if not _require_owner_callback(call):
-        return
-    bot.send_chat_action(call.message.chat.id, 'typing')
-    _handle_mw_action(call, _start_silent_mw())
-
-
-def _handle_mw_start_regular(call):
-    if not _require_owner_callback(call):
-        return
-    bot.send_chat_action(call.message.chat.id, 'typing')
-    _handle_mw_action(call, _start_notified_mw('🔴 NAS: Server Status\nMaintenance window has been started.\nThis may take awhile'))
-
-
-def _handle_mw_reboot_default(call):
-    if not _require_owner_callback(call):
-        return
-    bot.send_chat_action(call.message.chat.id, 'typing')
-    _handle_mw_action(call, _start_notified_mw(
-        '🔴 NAS: Server Status\nNAS is going to be rebooted.\nETA ~ 5 minutes',
-        default_duration=DEFAULT_REBOOT_MW_DURATION,
-        reason='Reboot maintenance',
-    ))
-
-
-def _handle_mw_firmware_default(call):
-    if not _require_owner_callback(call):
-        return
-    bot.send_chat_action(call.message.chat.id, 'typing')
-    _handle_mw_action(call, _start_notified_mw(
-        '🔴 NAS: Server Status\nFirmware update.\nETA ~ 5 minutes',
-        default_duration=DEFAULT_FIRMWARE_MW_DURATION,
-        reason='Firmware maintenance',
-    ))
-
-
-def _handle_mw_stop_silent(call):
-    if not _require_owner_callback(call):
-        return
-    bot.send_chat_action(call.message.chat.id, 'typing')
-    _handle_mw_action(call, _stop_silent_mw())
-
-
-def _handle_mw_stop_regular(call):
-    if not _require_owner_callback(call):
-        return
-    bot.send_chat_action(call.message.chat.id, 'typing')
-    _handle_mw_action(call, _stop_notified_mw())
-
-
-def _handle_mw_status(call):
-    if not _require_owner_callback(call):
-        return
-    bot.send_chat_action(call.message.chat.id, 'typing')
-    _handle_mw_action(call, get_mw_status_text())
-
-
 def _handle_alertmanager_mw_action(call, result):
     _show_alertmanager_mw_result(call.message.chat.id, result, message_id=call.message.message_id)
 
@@ -864,9 +688,7 @@ CALLBACK_HANDLERS = {
     'nav_home': _handle_nav_home,
     'nav_plex': _handle_nav_plex,
     'nav_media': _handle_nav_media,
-    'nav_mw': _handle_nav_mw,
     'nav_am_mw': _handle_nav_alertmanager_mw,
-    'cmd_mw': _handle_nav_mw,
     'plex_allow': _handle_plex_allow,
     'cmd_ip': _handle_plex_allow,
     'plex_allow_manual': _handle_plex_allow_manual,
@@ -875,13 +697,6 @@ CALLBACK_HANDLERS = {
     'plex_status': _handle_plex_status,
     'media_redownload': _handle_media_redownload,
     'cmd_redownload': _handle_media_redownload,
-    'mw_start_silent': _handle_mw_start_silent,
-    'mw_start_regular': _handle_mw_start_regular,
-    'mw_reboot_default': _handle_mw_reboot_default,
-    'mw_firmware_default': _handle_mw_firmware_default,
-    'mw_stop_silent': _handle_mw_stop_silent,
-    'mw_stop_regular': _handle_mw_stop_regular,
-    'mw_status': _handle_mw_status,
     'am_mw_start': _handle_alertmanager_mw_start,
     'am_mw_stop': _handle_alertmanager_mw_stop,
     'am_mw_status': _handle_alertmanager_mw_status,

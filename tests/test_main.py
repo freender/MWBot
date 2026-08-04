@@ -161,7 +161,6 @@ class MainAuthTest(unittest.TestCase):
         self.assertIn('Choose a section', text)
         self.assertIn('📡 Plex Access', labels)
         self.assertIn('🎬 Media', labels)
-        self.assertNotIn('🔧 Kuma MW', labels)
         self.assertNotIn('🔕 Alertmanager MW', labels)
 
     def test_home_menu_shows_all_sections_for_owner(self):
@@ -172,7 +171,6 @@ class MainAuthTest(unittest.TestCase):
 
         self.assertIn('📡 Plex Access', labels)
         self.assertIn('🎬 Media', labels)
-        self.assertIn('🔧 Kuma MW', labels)
         self.assertIn('🔕 Alertmanager MW', labels)
 
     def test_home_menu_tracks_latest_message_id(self):
@@ -442,28 +440,6 @@ class MainAuthTest(unittest.TestCase):
         show_media_menu.assert_called_once_with(100, message_id=55)
         answer_callback_query.assert_called_once_with('call-id')
 
-    def test_nav_mw_rejects_authorized_non_owner(self):
-        call = make_call(20, data='nav_mw')
-
-        with mock.patch.object(self.main, '_show_maintenance_menu') as show_maintenance_menu, \
-             mock.patch.object(self.main, '_answer_not_allowed') as answer_not_allowed, \
-             mock.patch.object(self.main.bot, 'answer_callback_query') as answer_callback_query:
-            self.main._handle_nav_mw(call)
-
-        show_maintenance_menu.assert_not_called()
-        answer_not_allowed.assert_called_once_with(100)
-        answer_callback_query.assert_called_once_with('call-id')
-
-    def test_nav_mw_allows_owner(self):
-        call = make_call(10, data='nav_mw')
-
-        with mock.patch.object(self.main, '_show_maintenance_menu') as show_maintenance_menu, \
-             mock.patch.object(self.main.bot, 'answer_callback_query') as answer_callback_query:
-            self.main._handle_nav_mw(call)
-
-        show_maintenance_menu.assert_called_once_with(100, message_id=55)
-        answer_callback_query.assert_called_once_with('call-id')
-
     def test_nav_alertmanager_mw_rejects_authorized_non_owner(self):
         call = make_call(20, data='nav_am_mw')
 
@@ -560,34 +536,6 @@ class MainAuthTest(unittest.TestCase):
         start_redownload_flow.assert_called_once_with(100, 20, message_id=55)
         answer_callback_query.assert_called_once_with('call-id')
 
-    def test_mw_status_rejects_authorized_non_owner(self):
-        call = make_call(20, data='mw_status')
-
-        with mock.patch.object(self.main, 'get_mw_status_text') as get_mw_status_text, \
-             mock.patch.object(self.main, '_handle_mw_action') as handle_mw_action, \
-             mock.patch.object(self.main, '_answer_not_allowed') as answer_not_allowed, \
-             mock.patch.object(self.main.bot, 'answer_callback_query') as answer_callback_query:
-            self.main._handle_mw_status(call)
-
-        get_mw_status_text.assert_not_called()
-        handle_mw_action.assert_not_called()
-        answer_not_allowed.assert_called_once_with(100)
-        answer_callback_query.assert_called_once_with('call-id')
-
-    def test_mw_status_allows_owner(self):
-        call = make_call(10, data='mw_status')
-
-        with mock.patch.object(self.main, 'get_mw_status_text', return_value='mw text') as get_mw_status_text, \
-             mock.patch.object(self.main, '_handle_mw_action') as handle_mw_action, \
-             mock.patch.object(self.main.bot, 'answer_callback_query') as answer_callback_query, \
-             mock.patch.object(self.main.bot, 'send_chat_action') as send_chat_action:
-            self.main._handle_mw_status(call)
-
-        get_mw_status_text.assert_called_once_with()
-        send_chat_action.assert_called_once_with(100, 'typing')
-        handle_mw_action.assert_called_once_with(call, 'mw text')
-        answer_callback_query.assert_called_once_with('call-id')
-
     def test_menu_close_deletes_message(self):
         call = make_call(20, data='menu_close')
         self.main._home_menu_messages[100] = 55
@@ -638,32 +586,6 @@ class MainAuthTest(unittest.TestCase):
         execute_redownload.assert_not_called()
         answer_not_allowed.assert_called_once_with(100)
         self.assertNotIn('100:20', self.main._pending_redownloads)
-
-    def test_owner_only_maintenance_callbacks_reject_authorized_non_owner(self):
-        call = make_call(20)
-        handlers = [
-            self.main._handle_mw_start_silent,
-            self.main._handle_mw_start_regular,
-            self.main._handle_mw_reboot_default,
-            self.main._handle_mw_firmware_default,
-            self.main._handle_mw_stop_silent,
-            self.main._handle_mw_stop_regular,
-            self.main._handle_mw_status,
-        ]
-
-        with mock.patch.object(self.main, '_start_silent_mw') as start_silent, \
-             mock.patch.object(self.main, '_start_notified_mw') as start_notified, \
-             mock.patch.object(self.main, '_stop_silent_mw') as stop_silent, \
-             mock.patch.object(self.main, '_stop_notified_mw') as stop_notified, \
-             mock.patch.object(self.main, 'get_mw_status_text') as get_status:
-            for handler in handlers:
-                handler(call)
-
-        start_silent.assert_not_called()
-        start_notified.assert_not_called()
-        stop_silent.assert_not_called()
-        stop_notified.assert_not_called()
-        get_status.assert_not_called()
 
     def test_owner_only_alertmanager_callbacks_reject_authorized_non_owner(self):
         call = make_call(20)

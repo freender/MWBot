@@ -601,15 +601,8 @@ class ModulesTest(unittest.TestCase):
         self.assertTrue(cache['loaded'])
         self.assertFalse(self.modules.is_auth_user(message))
 
-    def test_mw_status_text(self):
-        state = self.modules.build_mw_state(timedelta(minutes=45), reason='Firmware maintenance')
-        text = self.modules.get_mw_status_text(state)
-        self.assertIn('Firmware maintenance is active.', text)
-        self.assertIn('Remaining:', text)
-
     def test_start_alertmanager_mw_creates_independent_state(self):
-        with mock.patch('modules.alertmanager.create_silence', return_value='silence-1') as create_silence, \
-             mock.patch.object(self.maintenance, 'start_mw') as start_kuma_mw:
+        with mock.patch('modules.alertmanager.create_silence', return_value='silence-1') as create_silence:
             result = self.modules.start_alertmanager_mw(timedelta(hours=2))
 
         self.assertIn('Alertmanager maintenance started.', result)
@@ -618,8 +611,6 @@ class ModulesTest(unittest.TestCase):
             comment='mwbot-alertmanager-maintenance',
         )
         self.assertEqual(self.modules.load_alertmanager_mw_state()['silence_id'], 'silence-1')
-        self.assertIsNone(self.modules.load_mw_state())
-        start_kuma_mw.assert_not_called()
 
     def test_start_alertmanager_mw_preserves_unverified_existing_state(self):
         self.maintenance.save_alertmanager_mw_state({
@@ -786,73 +777,6 @@ class ModulesTest(unittest.TestCase):
             result = self.modules.stop_alertmanager_mw()
 
         self.assertEqual(result, 'Alertmanager maintenance completed, but local state cleanup failed.')
-
-    def test_stop_timed_mw_clears_state_and_deletes_message(self):
-        state = self.modules.build_mw_state(
-            timedelta(minutes=30),
-            notify_chat_id='200',
-            notify_message_id=55,
-            reason='Maintenance window',
-        )
-        self.modules.save_mw_state(state)
-        bot = DummyBot()
-
-        with mock.patch.object(self.maintenance, 'stop_mw', return_value='MW has been completed'):
-            result, success = self.modules.stop_timed_mw(bot)
-
-        self.assertTrue(success)
-        self.assertEqual(result, 'MW has been completed')
-        self.assertEqual(bot.deleted, [('200', 55)])
-        self.assertIsNone(self.modules.load_mw_state())
-
-    def test_stop_timed_mw_keeps_state_on_failure(self):
-        state = self.modules.build_mw_state(timedelta(minutes=30), notify_chat_id='200', notify_message_id=55)
-        self.modules.save_mw_state(state)
-        bot = DummyBot()
-
-        with mock.patch.object(self.maintenance, 'stop_mw', return_value='Unable to establish connection to Uptime Kuma'):
-            result, success = self.modules.stop_timed_mw(bot)
-
-        self.assertFalse(success)
-        self.assertEqual(result, 'Unable to establish connection to Uptime Kuma')
-        self.assertEqual(bot.deleted, [])
-        self.assertIsNotNone(self.modules.load_mw_state())
-
-    def test_replace_mw_state_deletes_previous_message(self):
-        self.modules.save_mw_state(self.modules.build_mw_state(
-            timedelta(minutes=30),
-            notify_chat_id='200',
-            notify_message_id=55,
-        ))
-        bot = DummyBot()
-
-        new_state = self.modules.build_mw_state(
-            timedelta(minutes=45),
-            notify_chat_id='200',
-            notify_message_id=77,
-        )
-        self.modules.replace_mw_state(bot, new_state)
-
-        self.assertEqual(bot.deleted, [('200', 55)])
-        self.assertEqual(self.modules.load_mw_state()['notify_message_id'], 77)
-
-    def test_maintain_timed_mw_sends_failure_message(self):
-        expired_at = datetime.now(ZoneInfo(self.cfg.TZ)) - timedelta(minutes=1)
-        self.modules.save_mw_state({
-            'expires_at': expired_at.isoformat(),
-            'duration': '30m',
-            'notify_chat_id': '200',
-            'notify_message_id': 55,
-            'reason': 'Maintenance window',
-        })
-        bot = DummyBot()
-
-        with mock.patch.object(self.maintenance, 'stop_timed_mw', return_value=('boom', False)):
-            with mock.patch.object(self.maintenance.time, 'sleep', side_effect=RuntimeError('stop loop')):
-                with self.assertRaises(RuntimeError):
-                    self.modules.maintain_timed_mw(bot, poll_interval=0)
-
-        self.assertEqual(bot.sent, [('200', '⚠️ NAS: Server Status\nTimed maintenance cleanup failed: boom')])
 
     def test_get_rule_status_uses_shared_rule_fetch(self):
         payload = {

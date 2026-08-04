@@ -1,15 +1,10 @@
 # MWBot
 
-MWBot is a Telegram bot designed to manage independent maintenance windows (MW) in Uptime Kuma and Alertmanager and notify a specified Telegram chat. It uses a menu-first Telegram flow, with `/start` opening the inline button menu for all supported actions.
+MWBot is a Telegram bot for Alertmanager maintenance windows and media/Plex access controls. It uses a menu-first Telegram flow, with `/start` opening the inline button menu for all supported actions.
 
 ## Features
 
-- Start and stop maintenance windows in Uptime Kuma.
-- Independently start and stop Alertmanager maintenance silences, with API health and active-alert status.
-- Manage maintenance windows from the `/start` menu with quick actions for silent, regular, reboot, and firmware flows.
-- Auto-stop timed maintenance windows and clean up the notification message when the window completes successfully.
-- Notify a dedicated Telegram channel about maintenance activities.
-- Support a separate notification chat for testing via environment variable override.
+- Start and stop Alertmanager maintenance silences, with API health and active-alert status.
 - Manage ISP ASN access through Cloudflare WAF.
 - Detect a user's Cloudflare-observed ASN through a short-lived Worker session.
 - Authenticate users from Seerr Telegram notification settings.
@@ -29,11 +24,6 @@ services:
     environment:
       - TOKEN=${TELEGRAM_TOKEN} # Set your Telegram bot token
       - CHAT_ID=${TELEGRAM_CHATID} # Default Telegram chat ID for notifications
-      - NOTIFY_CHAT_ID=${TELEGRAM_NOTIFY_CHATID} # Optional override for maintenance notifications
-      - KUMA_HOST=${UPTIME_HOST} # Uptime Kuma IP address and port
-      - KUMA_LOGIN=${UPTIME_LOGIN} # Uptime Kuma login
-      - KUMA_PASSWORD=${UPTIME_PASSWORD} # Uptime Kuma password
-      - KUMA_MW_ID=${UPTIME_MW_ID} # ID of the maintenance window to manage
       - ALERTMANAGER_URL=${ALERTMANAGER_URL} # Optional Alertmanager API base URL
       - ALERTMANAGER_MW_MATCHERS=${ALERTMANAGER_MW_MATCHERS} # Optional silence matcher JSON
       - ALERTMANAGER_OPEN_MW_DURATION=${ALERTMANAGER_OPEN_MW_DURATION} # Optional safety expiry; defaults to 12h
@@ -62,11 +52,6 @@ services:
 
 - `TOKEN`: Your Telegram bot token.
 - `CHAT_ID`: The default Telegram chat ID to receive notifications.
-- `NOTIFY_CHAT_ID`: Optional notification chat override. If unset, `CHAT_ID` is used.
-- `KUMA_HOST`: The IP address and port of your Uptime Kuma instance.
-- `KUMA_LOGIN`: The login username for Uptime Kuma.
-- `KUMA_PASSWORD`: The password for Uptime Kuma.
-- `KUMA_MW_ID`: The ID of the maintenance window to manage in Uptime Kuma.
 - `ALERTMANAGER_URL`: Optional Alertmanager API base URL used by the separate Alertmanager maintenance menu.
 - `ALERTMANAGER_MW_MATCHERS`: Optional JSON array of Alertmanager silence matchers. Defaults to all alerts.
 - `ALERTMANAGER_OPEN_MW_DURATION`: Alertmanager maintenance safety expiry. Defaults to `12h`.
@@ -94,9 +79,7 @@ services:
 
 1. **Open the Bot**: Use `/start` to open the main menu.
 2. **Manage Maintenance Windows**:
-    - Open Kuma MW for the existing Uptime Kuma maintenance flow.
-    - Use the inline buttons for silent start, regular start, reboot 5m, firmware 5m, silent stop, stop + notify, and status.
-    - Use Alertmanager MW to independently start, stop, or inspect an Alertmanager silence.
+    - Use Alertmanager MW to start, stop, or inspect an Alertmanager silence.
 3. **Plex Access**: Open the Plex Access section and tap the network-check link. MWBot applies the detected ISP ASN automatically, then updates the same menu with an explicit success or failure result.
 4. **Redownload Control**: Open the Media section and follow the prompts. The bot confirms the target, then blocklists the matching release in Sonarr or Radarr so it is not downloaded again.
 
@@ -120,13 +103,10 @@ services:
 - Network detection uses the Worker in `worker/`; see `worker/README.md`. Both Worker environment variables are required for Plex access grants.
 - The temporary WAF rule permits the ASN reported directly by Cloudflare, using the same classification as the WAF `ip.geoip.asnum` field.
 
-## Timed Maintenance Windows
+## Maintenance Windows
 
-- Timed maintenance windows are persisted to `/config/mw_state.json`.
-- Alertmanager maintenance state is persisted separately to `/config/alertmanager_mw_state.json`.
-- When a timed maintenance window expires, the bot stops the Uptime Kuma maintenance window automatically.
-- If the maintenance notification was sent to the notification chat, the bot deletes that message after a successful timed completion to keep the channel clean.
-- Failure messages are left in chat so cleanup problems remain visible.
+- Alertmanager maintenance state is persisted to `/config/alertmanager_mw_state.json`.
+- Every Alertmanager maintenance silence has a safety expiry.
 
 ## Contributing
 

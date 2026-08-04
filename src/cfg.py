@@ -65,11 +65,6 @@ def _get_duration(name, default):
 
 TOKEN = _require_env('TOKEN')
 CHAT_ID = _require_env('CHAT_ID')
-NOTIFY_CHAT_ID = os.getenv('NOTIFY_CHAT_ID', CHAT_ID)
-KUMA_HOST = _require_env('KUMA_HOST')
-KUMA_LOGIN = _require_env('KUMA_LOGIN')
-KUMA_PASSWORD = _require_env('KUMA_PASSWORD')
-KUMA_MW_ID = _get_int('KUMA_MW_ID')
 WAF_TOKEN = _require_env('WAF_TOKEN')
 WAF_ZONE = _require_env('WAF_ZONE')
 WAF_RULESET = _require_env('WAF_RULESET')
