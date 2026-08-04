@@ -1,4 +1,6 @@
+import json
 import logging
+import os
 import re
 import threading
 import time
@@ -11,6 +13,8 @@ import cfg
 from modules.common import request_json
 
 _WAF_UPDATE_LOCK = threading.Lock()
+_AS_ORGANIZATIONS_LOCK = threading.Lock()
+AS_ORGANIZATIONS_FILE = '/config/as_organizations.json'
 
 
 def convert_to_local_time(timestamp):
@@ -79,6 +83,55 @@ def _update_firewall_rule(rule_data):
         return False, result
 
 
+def _load_as_organizations():
+    with _AS_ORGANIZATIONS_LOCK:
+        if not os.path.exists(AS_ORGANIZATIONS_FILE):
+            return {}
+        try:
+            with open(AS_ORGANIZATIONS_FILE, 'r', encoding='utf-8') as handle:
+                organizations = json.load(handle)
+        except (OSError, json.JSONDecodeError) as exc:
+            logging.warning('Unable to read ASN organization cache: %s', exc)
+            return {}
+    if not isinstance(organizations, dict):
+        return {}
+    return {
+        str(asn): organization
+        for asn, organization in organizations.items()
+        if str(asn).isdigit() and isinstance(organization, str) and organization
+    }
+
+
+def _save_as_organization(asn, organization):
+    if not isinstance(organization, str):
+        return
+    organization = organization.strip()
+    if not organization or len(organization) > 120:
+        return
+
+    with _AS_ORGANIZATIONS_LOCK:
+        organizations = _load_as_organizations_unlocked()
+        organizations[str(asn)] = organization
+        try:
+            os.makedirs(os.path.dirname(AS_ORGANIZATIONS_FILE), exist_ok=True)
+            with open(AS_ORGANIZATIONS_FILE, 'w', encoding='utf-8') as handle:
+                json.dump(organizations, handle)
+        except OSError as exc:
+            logging.warning('Unable to save ASN organization cache: %s', exc)
+
+
+def _load_as_organizations_unlocked():
+    if not os.path.exists(AS_ORGANIZATIONS_FILE):
+        return {}
+    try:
+        with open(AS_ORGANIZATIONS_FILE, 'r', encoding='utf-8') as handle:
+            organizations = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        logging.warning('Unable to read ASN organization cache: %s', exc)
+        return {}
+    return organizations if isinstance(organizations, dict) else {}
+
+
 def get_asns_from_firewall_rule():
     rule, error = _get_waf_rule()
     if rule is None:
@@ -93,7 +146,7 @@ def get_asns_from_firewall_rule():
     return asns, None
 
 
-def grant_network_access(asn):
+def grant_network_access(asn, as_organization=None):
     normalized_asn = str(asn)
     if not normalized_asn.isdigit() or not 0 < int(normalized_asn) <= 4_294_967_295:
         return False, 'Unable to add access because the detected ASN is invalid.'
@@ -111,7 +164,8 @@ def grant_network_access(asn):
         logging.info('New Rule: %s ASNs', len(old_asns))
         success, error = _update_firewall_rule(_build_rule_payload(old_asns, enabled=True))
         if success:
-            result = 'Your current ISP has been granted temporary access.'
+            _save_as_organization(normalized_asn, as_organization)
+            result = 'Network access granted.'
             logging.info(result)
             return True, result
         return False, error
@@ -150,7 +204,12 @@ def get_firewall_status_text():
     if not temporary_asns:
         return 'Plex access is enabled.'
 
-    return f'Plex access is enabled. Temporary ASNs: {", ".join(temporary_asns)}.'
+    organizations = _load_as_organizations()
+    networks = ', '.join(
+        f'{organizations[asn]} (AS{asn})' if asn in organizations else f'AS{asn}'
+        for asn in temporary_asns
+    )
+    return f'Plex access is enabled. Temporary networks: {networks}.'
 
 
 def get_rule_modify_date():

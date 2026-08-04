@@ -1,5 +1,8 @@
 import logging
 import re
+import copy
+import threading
+import time
 from html import escape
 
 import requests
@@ -49,6 +52,12 @@ LANGUAGE_LABELS = {
     'vi': 'Vietnamese',
     'zh': 'Chinese',
 }
+
+_MEDIA_DETAILS_CACHE = {}
+_OPEN_ISSUES_CACHE = None
+_CACHE_LOCK = threading.Lock()
+MEDIA_DETAILS_CACHE_TTL = 10 * 60
+OPEN_ISSUES_CACHE_TTL = 30
 
 
 def _extract_year(value):
@@ -161,10 +170,21 @@ def get_seerr_issue(issue_id):
 
 
 def get_seerr_media_details(media_type, tmdb_id):
+    cache_key = (media_type, str(tmdb_id))
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        cached = _MEDIA_DETAILS_CACHE.get(cache_key)
+        if cached and now - cached[0] < MEDIA_DETAILS_CACHE_TTL:
+            return copy.deepcopy(cached[1]), None
+
     endpoint = 'movie' if media_type == 'movie' else 'tv'
     url = f"{normalize_base_url(cfg.SEERR_BASE_URL)}/api/v1/{endpoint}/{tmdb_id}"
     try:
-        return request_json('GET', url, headers=build_api_headers(cfg.SEERR_API_KEY)), None
+        media_details = request_json('GET', url, headers=build_api_headers(cfg.SEERR_API_KEY))
+        if isinstance(media_details, dict):
+            with _CACHE_LOCK:
+                _MEDIA_DETAILS_CACHE[cache_key] = (now, copy.deepcopy(media_details))
+        return media_details, None
     except requests.exceptions.HTTPError as exc:
         status_code = exc.response.status_code if exc.response is not None else 'unknown'
         if status_code == 404:
@@ -200,6 +220,12 @@ def get_all_seerr_issue_ids():
 
 
 def get_open_seerr_issues():
+    global _OPEN_ISSUES_CACHE
+    now = time.monotonic()
+    with _CACHE_LOCK:
+        if _OPEN_ISSUES_CACHE and now - _OPEN_ISSUES_CACHE[0] < OPEN_ISSUES_CACHE_TTL:
+            return copy.deepcopy(_OPEN_ISSUES_CACHE[1])
+
     issues = []
     page = 1
     take = 50
@@ -241,7 +267,16 @@ def get_open_seerr_issues():
         actionable_issues.append(issue)
 
     actionable_issues.sort(key=issue_sort_key, reverse=True)
+    with _CACHE_LOCK:
+        _OPEN_ISSUES_CACHE = (now, copy.deepcopy(actionable_issues))
     return actionable_issues
+
+
+def clear_seerr_read_caches():
+    global _OPEN_ISSUES_CACHE
+    with _CACHE_LOCK:
+        _MEDIA_DETAILS_CACHE.clear()
+        _OPEN_ISSUES_CACHE = None
 
 
 def get_issue_display_title(issue):

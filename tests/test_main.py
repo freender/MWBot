@@ -254,7 +254,7 @@ class MainAuthTest(unittest.TestCase):
             'message_id': 55,
         }
         self.main._pending_network_checks['100:20'] = pending
-        detected = {'status': 'complete', 'asn': '7922'}
+        detected = {'status': 'complete', 'asn': '7922', 'as_organization': 'Comcast Cable'}
 
         with mock.patch.object(self.main, 'get_network_check', return_value=(detected, None)), \
              mock.patch.object(self.main, 'grant_network_access', return_value=(True, 'access granted')) as grant_access, \
@@ -264,11 +264,11 @@ class MainAuthTest(unittest.TestCase):
              mock.patch.object(self.main.time, 'monotonic', return_value=0):
             self.main._poll_network_check('100:20', pending)
 
-        grant_access.assert_called_once_with('7922')
+        grant_access.assert_called_once_with('7922', 'Comcast Cable')
         delete_check.assert_called_once_with('session-id')
         show_result.assert_called_once_with(
             100,
-            '✅ Access Enabled\naccess granted',
+            '✅ Access Enabled\nNetwork: Comcast Cable (AS7922)',
             user_id=20,
             message_id=55,
         )
@@ -333,6 +333,38 @@ class MainAuthTest(unittest.TestCase):
 
         grant_access.assert_not_called()
         self.assertIs(self.main._pending_network_checks['100:20'], replacement)
+
+    def test_poll_does_not_grant_network_access_after_authorization_is_revoked(self):
+        pending = {
+            'id': 'session-id',
+            'check_url': 'https://access-check.example.com/check/session-id',
+            'chat_id': 100,
+            'user_id': 20,
+            'message_id': 55,
+        }
+        self.main._pending_network_checks['100:20'] = pending
+        self.modules._seerr_access_cache['authorized_chat_ids'].remove(20)
+
+        with mock.patch.object(
+            self.main,
+            'get_network_check',
+            return_value=({'status': 'complete', 'asn': '7922'}, None),
+        ), mock.patch.object(self.main, 'grant_network_access') as grant_access, \
+             mock.patch.object(self.main, 'delete_network_check', return_value=True) as delete_check, \
+             mock.patch.object(self.main, '_show_plex_result') as show_result, \
+             mock.patch.object(self.main.shutdown_event, 'wait', return_value=False), \
+             mock.patch.object(self.main.time, 'monotonic', return_value=0):
+            self.main._poll_network_check('100:20', pending)
+
+        grant_access.assert_not_called()
+        delete_check.assert_called_once_with('session-id')
+        show_result.assert_called_once_with(
+            100,
+            '❌ Access Not Enabled\nAccess permission is no longer available. Select Allow Plex and try again.',
+            user_id=20,
+            message_id=55,
+        )
+        self.assertNotIn('100:20', self.main._pending_network_checks)
 
     def test_finish_network_check_shows_explicit_failure_in_same_menu(self):
         pending = {
@@ -570,6 +602,45 @@ class MainAuthTest(unittest.TestCase):
 
         resolve_redownload_issue.assert_not_called()
         answer_callback_query.assert_called_once_with('call-id', text='Not authorized')
+
+    def test_redownload_confirmation_does_not_execute_after_authorization_is_revoked(self):
+        call = make_call(20, data='redownload_confirm')
+        self.main._pending_redownloads['100:20'] = {'media_type': 'movie'}
+        self.modules._seerr_access_cache['authorized_chat_ids'].remove(20)
+
+        with mock.patch.object(self.main, 'execute_redownload') as execute_redownload, \
+             mock.patch.object(self.main, '_answer_not_allowed') as answer_not_allowed:
+            self.main.handle_callback(call)
+
+        execute_redownload.assert_not_called()
+        answer_not_allowed.assert_called_once_with(100)
+        self.assertNotIn('100:20', self.main._pending_redownloads)
+
+    def test_owner_only_maintenance_callbacks_reject_authorized_non_owner(self):
+        call = make_call(20)
+        handlers = [
+            self.main._handle_mw_start_silent,
+            self.main._handle_mw_start_regular,
+            self.main._handle_mw_reboot_default,
+            self.main._handle_mw_firmware_default,
+            self.main._handle_mw_stop_silent,
+            self.main._handle_mw_stop_regular,
+            self.main._handle_mw_status,
+        ]
+
+        with mock.patch.object(self.main, '_start_silent_mw') as start_silent, \
+             mock.patch.object(self.main, '_start_notified_mw') as start_notified, \
+             mock.patch.object(self.main, '_stop_silent_mw') as stop_silent, \
+             mock.patch.object(self.main, '_stop_notified_mw') as stop_notified, \
+             mock.patch.object(self.main, 'get_mw_status_text') as get_status:
+            for handler in handlers:
+                handler(call)
+
+        start_silent.assert_not_called()
+        start_notified.assert_not_called()
+        stop_silent.assert_not_called()
+        stop_notified.assert_not_called()
+        get_status.assert_not_called()
 
 
 if __name__ == '__main__':

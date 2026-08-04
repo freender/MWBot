@@ -85,7 +85,13 @@ def get_network_check(session_id):
     if not asn.isdigit() or not 0 < int(asn) <= 4_294_967_295:
         return None, 'The network detection service returned an invalid ASN.'
 
-    return {'status': 'complete', 'asn': asn}, None
+    detected = {'status': 'complete', 'asn': asn}
+    organization = payload.get('as_organization')
+    if isinstance(organization, str):
+        organization = organization.strip()
+        if organization and len(organization) <= 120:
+            detected['as_organization'] = organization
+    return detected, None
 
 
 def delete_network_check(session_id):

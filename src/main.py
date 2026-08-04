@@ -13,6 +13,7 @@ from modules import (
     build_issue_label,
     build_mw_state,
     build_redownload_confirmation,
+    clear_seerr_read_caches,
     create_am_silence,
     create_network_check,
     delete_network_check,
@@ -45,7 +46,7 @@ shutdown_event = threading.Event()
 
 DEFAULT_REBOOT_MW_DURATION = timedelta(minutes=5)
 DEFAULT_FIRMWARE_MW_DURATION = timedelta(minutes=5)
-NETWORK_CHECK_POLL_INTERVAL = 3
+NETWORK_CHECK_POLL_INTERVAL = 1
 NETWORK_CHECK_TIMEOUT = 5 * 60
 
 # -- Pending redownload targets keyed by "chat_id:user_id" --
@@ -236,6 +237,12 @@ def _network_check_markup(check_url):
     markup.add(InlineKeyboardButton('🌐 Detect Current Network', url=check_url))
     markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_plex'))
     return markup
+
+
+def _format_detected_network(detected):
+    asn = f"AS{detected['asn']}"
+    organization = detected.get('as_organization')
+    return f'{organization} ({asn})' if organization else asn
 
 
 def _media_result_markup():
@@ -501,10 +508,9 @@ def _start_network_check(chat_id, user_id, message_id=None):
     pending['message_id'] = _show_menu(
         chat_id,
         '📡 <b>Allow Plex</b>\n'
-        '⏳ <b>Status: Waiting for network detection</b>\n\n'
-        'Open the network check while connected to the network that will use Plex or Seerr.\n\n'
-        'This menu will update with a clear success or failure result.\n'
-        'The check expires in five minutes.',
+        '⏳ <b>Waiting for detection</b>\n\n'
+        'Open the link on the network you want to use.\n'
+        'Expires in 5 minutes.',
         _network_check_markup(session['check_url']),
         message_id=message_id,
     ) or message_id
@@ -546,12 +552,30 @@ def _poll_network_check(key, pending):
             continue
         if _pending_network_checks.get(key) is not pending:
             return
+        if not is_auth_chat_id(pending['user_id']):
+            if not delete_network_check(pending['id']):
+                logging.warning('Unable to consume revoked network detection session')
+            _finish_network_check(
+                key,
+                pending,
+                'Access permission is no longer available. Select Allow Plex and try again.',
+                success=False,
+            )
+            return
 
-        success, result = grant_network_access(detected['asn'])
+        success, result = grant_network_access(
+            detected['asn'],
+            detected.get('as_organization'),
+        )
         if success:
             if not delete_network_check(pending['id']):
                 logging.warning('Unable to consume completed network detection session')
-            _finish_network_check(key, pending, result, success=True)
+            _finish_network_check(
+                key,
+                pending,
+                f'Network: {_format_detected_network(detected)}',
+                success=True,
+            )
             return
 
         _finish_network_check(
@@ -837,6 +861,10 @@ def handle_callback(call):
     if data == 'redownload_confirm':
         key = _pending_key(chat_id, user_id)
         target = _pending_redownloads.pop(key, None)
+        if not is_auth_chat_id(user_id):
+            bot.answer_callback_query(call.id, text='Not authorized')
+            _answer_not_allowed(chat_id)
+            return
         if target is None:
             bot.answer_callback_query(call.id, text='Session expired. Open Media from /start and try again.')
             return
@@ -849,6 +877,7 @@ def handle_callback(call):
         )
         bot.send_chat_action(chat_id, 'typing')
         result = execute_redownload(target)
+        clear_seerr_read_caches()
         _show_media_result(chat_id, result or 'Redownload request completed.', message_id=call.message.message_id)
         return
 

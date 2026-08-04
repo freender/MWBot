@@ -1,4 +1,6 @@
 import logging
+import threading
+import time
 
 import cfg
 from telebot.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
@@ -43,6 +45,7 @@ from modules.redownload import (
     build_issue_label,
     build_redownload_confirmation,
     build_target_label,
+    clear_seerr_read_caches,
     delete_queue_item,
     execute_redownload,
     find_queue_item,
@@ -82,7 +85,10 @@ _seerr_access_cache = {
     'authorized_chat_ids': set(),
     'owner_chat_ids': set(),
     'loaded': False,
+    'refreshed_at': None,
 }
+_SEERR_ACCESS_CACHE_LOCK = threading.Lock()
+SEERR_ACCESS_CACHE_TTL = 60
 
 
 def is_command(string):
@@ -211,6 +217,7 @@ def warm_seerr_access_cache():
         })
 
     _apply_access_test_override()
+    _seerr_access_cache['refreshed_at'] = time.monotonic()
     cache = get_seerr_access_cache()
     logging.info(
         'Seerr Telegram access cache ready: %s authorized, %s owners',
@@ -218,6 +225,16 @@ def warm_seerr_access_cache():
         len(cache['owner_chat_ids']),
     )
     return cache
+
+
+def _refresh_seerr_access_cache_if_stale():
+    refreshed_at = _seerr_access_cache.get('refreshed_at')
+    if refreshed_at is None or time.monotonic() - refreshed_at < SEERR_ACCESS_CACHE_TTL:
+        return
+    with _SEERR_ACCESS_CACHE_LOCK:
+        refreshed_at = _seerr_access_cache.get('refreshed_at')
+        if refreshed_at is None or time.monotonic() - refreshed_at >= SEERR_ACCESS_CACHE_TTL:
+            warm_seerr_access_cache()
 
 
 def _build_bot_commands(command_map):
@@ -248,10 +265,12 @@ def register_bot_commands(bot, access_cache=None):
 
 
 def is_owner_chat_id(chat_id):
+    _refresh_seerr_access_cache_if_stale()
     return bool(chat_id in get_seerr_access_cache()['owner_chat_ids'])
 
 
 def is_auth_chat_id(chat_id):
+    _refresh_seerr_access_cache_if_stale()
     return bool(chat_id in get_seerr_access_cache()['authorized_chat_ids'])
 
 

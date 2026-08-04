@@ -79,6 +79,7 @@ class ModulesTest(unittest.TestCase):
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
         self.cfg, self.modules, self.maintenance, self.redownload, self.firewall, self.network_check = load_modules_package(self.temp_dir.name)
+        self.firewall.AS_ORGANIZATIONS_FILE = os.path.join(self.temp_dir.name, 'as_organizations.json')
         self.modules._seerr_access_cache.update({
             'authorized_chat_ids': set(),
             'owner_chat_ids': set(),
@@ -694,6 +695,7 @@ class ModulesTest(unittest.TestCase):
         get_asns.assert_not_called()
 
     def test_get_firewall_status_text_lists_temporary_networks(self):
+        self.firewall._save_as_organization('7922', 'Comcast Cable')
         with mock.patch.object(self.firewall, 'get_rule_status', return_value=(True, None)):
             with mock.patch.object(
                 self.firewall,
@@ -702,7 +704,7 @@ class ModulesTest(unittest.TestCase):
             ):
                 status = self.modules.get_firewall_status_text()
 
-        self.assertEqual(status, 'Plex access is enabled. Temporary ASNs: 7922.')
+        self.assertEqual(status, 'Plex access is enabled. Temporary networks: Comcast Cable (AS7922).')
 
     def test_build_rule_payload_uses_asn_only(self):
         payload = self.firewall._build_rule_payload(['1234', '7922'], enabled=True)
@@ -736,10 +738,11 @@ class ModulesTest(unittest.TestCase):
             '_update_firewall_rule',
             return_value=(True, None),
         ) as update_rule, mock.patch.object(self.firewall, '_WAF_UPDATE_LOCK', update_lock):
-            success, result = self.modules.grant_network_access('7922')
+            success, result = self.modules.grant_network_access('7922', 'Comcast Cable')
 
         self.assertTrue(success)
-        self.assertIn('current ISP', result)
+        self.assertEqual(result, 'Network access granted.')
+        self.assertEqual(self.firewall._load_as_organizations(), {'7922': 'Comcast Cable'})
         expression = update_rule.call_args.args[0]['expression']
         self.assertIn('ip.geoip.asnum in {1234 7922}', expression)
         self.assertNotIn('ip.src', expression)
@@ -773,7 +776,26 @@ class ModulesTest(unittest.TestCase):
             self.assertFalse(self.modules.network_check_is_configured())
 
     def test_get_network_check_validates_complete_network(self):
-        payload = {'status': 'complete', 'asn': 7922}
+        payload = {
+            'status': 'complete',
+            'asn': 7922,
+            'as_organization': 'Comcast Cable',
+        }
+        with mock.patch.object(self.network_check, 'request_json', return_value=payload):
+            detected, error = self.modules.get_network_check('session-id')
+
+        self.assertEqual(
+            detected,
+            {
+                'status': 'complete',
+                'asn': '7922',
+                'as_organization': 'Comcast Cable',
+            },
+        )
+        self.assertIsNone(error)
+
+    def test_get_network_check_ignores_invalid_organization(self):
+        payload = {'status': 'complete', 'asn': 7922, 'as_organization': 'x' * 121}
         with mock.patch.object(self.network_check, 'request_json', return_value=payload):
             detected, error = self.modules.get_network_check('session-id')
 

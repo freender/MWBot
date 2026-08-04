@@ -14,25 +14,35 @@ const CHECK_COMPLETE_HTML = `<!doctype html>
     body { margin: 0; min-height: 100svh; display: grid; place-items: center; padding: 24px; background: radial-gradient(circle at top, #1e293b 0, #090d16 58%); color: #e7edf7; }
     main { width: min(100%, 420px); padding: 38px 30px; border: 1px solid #334155; border-radius: 24px; background: #111827; box-shadow: 0 24px 70px #0009; text-align: center; }
     .status { width: 64px; height: 64px; display: grid; place-items: center; margin: 0 auto 22px; border-radius: 50%; background: #123524; color: #6ee7a8; font-size: 34px; font-weight: 800; }
+    .spinner { width: 32px; height: 32px; border: 4px solid #7dd3fc44; border-top-color: #7dd3fc; border-radius: 50%; animation: spin .6s linear infinite; }
     .eyebrow { margin: 0 0 8px; color: #7dd3fc; font-size: 12px; font-weight: 800; letter-spacing: .18em; }
     h1 { margin: 0; font-size: clamp(28px, 8vw, 38px); line-height: 1.08; }
     .message { margin: 18px 0 0; color: #aebbd0; font-size: 17px; line-height: 1.55; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
   </style>
 </head>
 <body>
   <main>
-    <div class="status" aria-hidden="true">&#10003;</div>
+    <div class="status" aria-hidden="true"><div class="spinner"></div></div>
     <p class="eyebrow">MWBOT</p>
-    <h1>Network detected</h1>
-    <p class="message">Return to Telegram. MWBot will apply access automatically and update the menu with the result.</p>
+    <h1 id="title">Updating Telegram</h1>
+    <p class="message" id="message">Keep this page open for a moment while MWBot applies access.</p>
   </main>
+  <script>
+    setTimeout(() => {
+      document.querySelector(".status").innerHTML = "&#10003;";
+      document.querySelector("#title").textContent = "Network detected";
+      document.querySelector("#message").textContent = "Return to Telegram to see the result.";
+    }, 3000);
+  </script>
 </body>
 </html>`;
 
 function securityHeaders(contentType) {
   return {
     "Cache-Control": "no-store, max-age=0",
-    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     "Content-Type": contentType,
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
@@ -84,6 +94,7 @@ function sessionResponse(id, session) {
   const body = { id, status: session.status, expires_in: remainingSeconds(session.expiresAt) };
   if (session.status === "complete") {
     body.asn = session.asn;
+    if (session.asOrganization) body.as_organization = session.asOrganization;
   }
   return json(body);
 }
@@ -114,7 +125,10 @@ async function checkSession(request, env, id) {
     return error("not found", 404);
   }
   // KV requires at least 60 seconds; expiresAt still enforces the original session deadline.
-  await env.SESSIONS.put(id, JSON.stringify({ status: "complete", expiresAt: session.expiresAt, asn }), { expirationTtl: Math.max(60, ttl) });
+  const asOrganization = requestCfAsOrganization(request);
+  const completeSession = { status: "complete", expiresAt: session.expiresAt, asn };
+  if (asOrganization) completeSession.asOrganization = asOrganization;
+  await env.SESSIONS.put(id, JSON.stringify(completeSession), { expirationTtl: Math.max(60, ttl) });
   return checkCompleteResponse();
 }
 
@@ -124,6 +138,13 @@ function checkCompleteResponse() {
 
 function requestCfAsn(request) {
   return request.cf?.asn;
+}
+
+function requestCfAsOrganization(request) {
+  const organization = request.cf?.asOrganization;
+  if (typeof organization !== "string") return null;
+  const normalized = organization.trim();
+  return normalized && normalized.length <= 120 ? normalized : null;
 }
 
 async function apiSession(request, env, id) {

@@ -27,18 +27,19 @@ test("creates, records, retrieves, and consumes a session", async () => {
   assert.match(session.id, /^[A-Za-z0-9_-]{43}$/);
   assert.equal(session.check_url, `https://worker.example/check/${session.id}`);
 
-  const checked = await worker.fetch(request(`/check/${session.id}`, { cf: { asn: 64512 } }), bindings);
+  const checked = await worker.fetch(request(`/check/${session.id}`, { cf: { asn: 64512, asOrganization: "Example Network" } }), bindings);
   assert.equal(checked.status, 200);
   const checkedText = await checked.text();
   assert.doesNotMatch(checkedText, /64512/);
-  assert.match(checkedText, /apply access automatically/);
+  assert.match(checkedText, /Updating Telegram/);
+  assert.match(checkedText, /3000/);
   assert.match(checkedText, /color-scheme: dark/);
   assert.match(checkedText, /background: #111827/);
   assert.match(checked.headers.get("Content-Security-Policy"), /style-src 'unsafe-inline'/);
 
   const complete = await worker.fetch(request(`/api/sessions/${session.id}`, auth()), bindings);
   const completePayload = await complete.json();
-  assert.deepEqual(completePayload, { id: session.id, status: "complete", expires_in: 300, asn: 64512 });
+  assert.deepEqual(completePayload, { id: session.id, status: "complete", expires_in: 300, asn: 64512, as_organization: "Example Network" });
   assert.equal("ip" in completePayload, false);
   const deleted = await worker.fetch(request(`/api/sessions/${session.id}`, auth("DELETE")), bindings);
   assert.equal(deleted.status, 204);
