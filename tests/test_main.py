@@ -271,7 +271,7 @@ class MainAuthTest(unittest.TestCase):
         delete_check.assert_called_once_with('session-id')
         show_result.assert_called_once_with(
             100,
-            '✅ Access Enabled\nNetwork: Comcast Cable (AS7922)',
+            '✅ Access Enabled\nYour current network now has Plex access.',
             user_id=20,
             message_id=55,
         )

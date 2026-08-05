@@ -224,12 +224,6 @@ def _network_check_markup(check_url):
     return markup
 
 
-def _format_detected_network(detected):
-    asn = f"AS{detected['asn']}"
-    organization = detected.get('as_organization')
-    return f'{organization} ({asn})' if organization else asn
-
-
 def _media_result_markup():
     markup = InlineKeyboardMarkup(row_width=1)
     markup.add(InlineKeyboardButton('📋 Pick Open Issue', callback_data='media_redownload'))
@@ -506,7 +500,7 @@ def _poll_network_check(key, pending):
             _finish_network_check(
                 key,
                 pending,
-                f'Network: {_format_detected_network(detected)}',
+                'Your current network now has Plex access.',
                 success=True,
             )
             return
