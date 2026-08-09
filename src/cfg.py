@@ -95,3 +95,7 @@ ALERTMANAGER_MW_MATCHERS = _get_json('ALERTMANAGER_MW_MATCHERS') if os.getenv('A
     {'name': 'alertname', 'value': '.+', 'isRegex': True, 'isEqual': True},
 ]
 ALERTMANAGER_OPEN_MW_DURATION = _get_duration('ALERTMANAGER_OPEN_MW_DURATION', '12h')
+
+# GitHub incident creation
+GITHUB_INCIDENT_REPO = _get_optional('GITHUB_INCIDENT_REPO', 'freender/homelab-ops')
+GITHUB_INCIDENT_TOKEN = _get_optional('GITHUB_INCIDENT_TOKEN')

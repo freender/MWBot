@@ -12,6 +12,7 @@ from modules import (
     build_issue_label,
     build_redownload_confirmation,
     clear_seerr_read_caches,
+    create_incident,
     create_network_check,
     delete_network_check,
     disable_asn_to_firewall_rule,
@@ -25,6 +26,7 @@ from modules import (
     is_auth_chat_id,
     is_command,
     is_owner_chat_id,
+    incident_creation_is_configured,
     network_check_is_configured,
     register_bot_commands,
     resolve_redownload_issue,
@@ -164,6 +166,7 @@ def _home_markup(user_id):
     if is_owner_chat_id(user_id):
         markup.add(
             InlineKeyboardButton('🔕 Alertmanager MW', callback_data='nav_am_mw'),
+            InlineKeyboardButton('🚨 New Incident', callback_data='incident_new'),
         )
     markup.add(InlineKeyboardButton('✖ Close', callback_data='menu_close'))
     return markup
@@ -243,6 +246,14 @@ def _alertmanager_mw_result_markup():
         InlineKeyboardButton('📋 Status', callback_data='am_mw_status'),
         InlineKeyboardButton('⬅ Back', callback_data='nav_am_mw'),
     )
+    markup.add(InlineKeyboardButton('🏠 Home', callback_data='nav_home'))
+    return markup
+
+
+def _incident_result_markup(incident=None):
+    markup = InlineKeyboardMarkup(row_width=1)
+    if incident:
+        markup.add(InlineKeyboardButton(f'Open Incident #{incident["number"]}', url=incident['url']))
     markup.add(InlineKeyboardButton('🏠 Home', callback_data='nav_home'))
     return markup
 
@@ -337,6 +348,15 @@ def _show_alertmanager_mw_result(chat_id, text, message_id=None):
     )
 
 
+def _show_incident_result(chat_id, text, incident=None, message_id=None):
+    _show_menu(
+        chat_id,
+        '🚨 <b>Homelab Incident</b>\n' + escape(text),
+        _incident_result_markup(incident=incident),
+        message_id=message_id,
+    )
+
+
 # ── Menu entry points ────────────────────────────────────────────────
 
 @bot.message_handler(commands=['start'])
@@ -345,6 +365,80 @@ def command_start(message):
     if previous_menu_message_id is not None:
         _delete_bot_message(message.chat.id, previous_menu_message_id)
     _show_home_menu(message.chat.id, user_id=_get_user_id(message))
+
+
+def _message_text(message):
+    return (getattr(message, 'text', None) or getattr(message, 'caption', None) or '').strip()
+
+
+def _create_incident_from_telegram(chat_id, summary, source_text=None, message_id=None):
+    bot.send_chat_action(chat_id, 'typing')
+    incident, error = create_incident(summary, source_text=source_text)
+    if incident is None:
+        _show_incident_result(chat_id, error or 'Unable to create the incident.', message_id=message_id)
+        return
+    _show_incident_result(
+        chat_id,
+        f'Incident #{incident["number"]} created. OpenCode triage is queued.',
+        incident=incident,
+        message_id=message_id,
+    )
+
+
+def _handle_incident_description(message, expected_user_id, menu_message_id):
+    if _get_user_id(message) != expected_user_id or not is_owner_chat_id(expected_user_id):
+        _answer_not_allowed(message.chat.id)
+        return
+    summary = _message_text(message)
+    if not summary or is_command(summary):
+        _show_incident_result(
+            message.chat.id,
+            'Incident creation cancelled. Use /incident followed by a description.',
+            message_id=menu_message_id,
+        )
+        return
+    _create_incident_from_telegram(message.chat.id, summary, message_id=menu_message_id)
+
+
+def _start_incident_flow(chat_id, user_id, message_id=None):
+    if not incident_creation_is_configured():
+        _show_incident_result(chat_id, 'GitHub incident creation is not configured.', message_id=message_id)
+        return
+    prompt_message_id = _show_menu(
+        chat_id,
+        '🚨 <b>New Incident</b>\nSend one message describing the symptom and affected host or service.',
+        _cancel_markup(cancel_callback='nav_home', cancel_label='⬅ Back'),
+        message_id=message_id,
+    ) or message_id
+    bot.register_next_step_handler_by_chat_id(
+        chat_id,
+        _handle_incident_description,
+        user_id,
+        prompt_message_id,
+    )
+
+
+@bot.message_handler(commands=['incident'])
+def command_incident(message):
+    user_id = _get_user_id(message)
+    if not is_owner_chat_id(user_id):
+        _answer_not_allowed(message.chat.id)
+        return
+
+    command_text = _message_text(message)
+    summary = command_text.partition(' ')[2].strip()
+    replied_message = getattr(message, 'reply_to_message', None)
+    replied_text = _message_text(replied_message) if replied_message else ''
+    if not summary and replied_text:
+        summary = replied_text
+    if not summary:
+        _start_incident_flow(message.chat.id, user_id)
+        return
+    _create_incident_from_telegram(
+        message.chat.id,
+        summary,
+        source_text=replied_text or None,
+    )
 
 
 def _start_redownload_flow(chat_id, user_id, message_id=None):
@@ -569,6 +663,7 @@ def _handle_menu_close(call):
 
 def _handle_nav_home(call):
     bot.answer_callback_query(call.id)
+    bot.clear_step_handler_by_chat_id(call.message.chat.id)
     _show_home_menu(call.message.chat.id, user_id=call.from_user.id, message_id=call.message.message_id)
 
 
@@ -677,6 +772,12 @@ def _handle_alertmanager_mw_status(call):
     _handle_alertmanager_mw_action(call, get_alertmanager_mw_status_text())
 
 
+def _handle_incident_new(call):
+    if not _require_owner_callback(call):
+        return
+    _start_incident_flow(call.message.chat.id, call.from_user.id, message_id=call.message.message_id)
+
+
 CALLBACK_HANDLERS = {
     'cancel': _handle_cancel,
     'menu_close': _handle_menu_close,
@@ -695,6 +796,7 @@ CALLBACK_HANDLERS = {
     'am_mw_start': _handle_alertmanager_mw_start,
     'am_mw_stop': _handle_alertmanager_mw_stop,
     'am_mw_status': _handle_alertmanager_mw_status,
+    'incident_new': _handle_incident_new,
 }
 
 

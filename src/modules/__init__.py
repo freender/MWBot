@@ -22,6 +22,12 @@ from modules.network_check import (
     get_network_check,
     network_check_is_configured,
 )
+from modules.incidents import (
+    build_incident_body,
+    build_incident_title,
+    create_incident,
+    incident_creation_is_configured,
+)
 from modules.maintenance import (
     clear_alertmanager_mw_state,
     format_duration,
@@ -67,7 +73,10 @@ DEFAULT_COMMANDS = {
 
 AUTH_COMMANDS = dict(DEFAULT_COMMANDS)
 
-OWNER_COMMANDS = dict(DEFAULT_COMMANDS)
+OWNER_COMMANDS = {
+    **DEFAULT_COMMANDS,
+    'incident': 'Create a homelab incident',
+}
 
 COMMANDS = OWNER_COMMANDS
 

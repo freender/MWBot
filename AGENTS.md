@@ -29,7 +29,7 @@ Run before every local deploy and again before committing:
 ```bash
 python3 -m py_compile src/main.py src/cfg.py src/modules/__init__.py \
   src/modules/common.py src/modules/firewall.py src/modules/maintenance.py \
-  src/modules/network_check.py src/modules/redownload.py \
+  src/modules/incidents.py src/modules/network_check.py src/modules/redownload.py \
   tests/test_main.py tests/test_modules.py
 python3 -m unittest tests.test_modules tests.test_main
 git diff --check

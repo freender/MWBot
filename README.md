@@ -9,6 +9,7 @@ MWBot is a Telegram bot for Alertmanager maintenance windows and media/Plex acce
 - Detect a user's Cloudflare-observed ASN through a short-lived Worker session.
 - Authenticate users from Seerr Telegram notification settings.
 - Interactive redownload workflow from the Media menu for Seerr issue, movie, or series URLs that blocklists bad Sonarr/Radarr releases.
+- Owner-only incident creation in the private `homelab-ops` repository from the menu or `/incident`.
 
 ## Docker Compose Setup
 
@@ -27,6 +28,8 @@ services:
       - ALERTMANAGER_URL=${ALERTMANAGER_URL} # Optional Alertmanager API base URL
       - ALERTMANAGER_MW_MATCHERS=${ALERTMANAGER_MW_MATCHERS} # Optional silence matcher JSON
       - ALERTMANAGER_OPEN_MW_DURATION=${ALERTMANAGER_OPEN_MW_DURATION} # Optional safety expiry; defaults to 12h
+      - GITHUB_INCIDENT_REPO=${GITHUB_INCIDENT_REPO} # Private incident repository
+      - GITHUB_INCIDENT_TOKEN=${GITHUB_INCIDENT_TOKEN} # Fine-grained token with Issues write access
       - WAF_TOKEN=${WAF_TOKEN} # Cloudflare WAF API token
       - WAF_ZONE=${WAF_ZONE} # Cloudflare WAF zone ID
       - WAF_RULESET=${WAF_RULESET} # Cloudflare WAF ruleset ID
@@ -55,6 +58,8 @@ services:
 - `ALERTMANAGER_URL`: Optional Alertmanager API base URL used by the separate Alertmanager maintenance menu.
 - `ALERTMANAGER_MW_MATCHERS`: Optional JSON array of Alertmanager silence matchers. Defaults to all alerts.
 - `ALERTMANAGER_OPEN_MW_DURATION`: Alertmanager maintenance safety expiry. Defaults to `12h`.
+- `GITHUB_INCIDENT_REPO`: Private GitHub repository used for incidents. Defaults to `freender/homelab-ops`.
+- `GITHUB_INCIDENT_TOKEN`: Fine-grained token limited to that repository with Issues read/write access.
 - `WAF_TOKEN`: The API token for Cloudflare WAF.
 - `WAF_ZONE`: The zone ID for Cloudflare WAF.
 - `WAF_RULESET`: The ruleset ID for Cloudflare WAF.
@@ -82,6 +87,7 @@ services:
     - Use Alertmanager MW to start, stop, or inspect an Alertmanager silence.
 3. **Plex Access**: Open the Plex Access section and tap the network-check link. MWBot applies the detected ISP ASN automatically, then updates the same menu with an explicit success or failure result.
 4. **Redownload Control**: Open the Media section and follow the prompts. The bot confirms the target, then blocklists the matching release in Sonarr or Radarr so it is not downloaded again.
+5. **Incidents**: Owners can select New Incident, run `/incident <description>`, or reply to an alert with `/incident`. The issue is created with the `incident` label, and MWBot posts a `/oc` comment that triggers read-only OpenCode triage in that repository.
 
 ## How Redownload Works
 

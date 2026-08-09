@@ -72,6 +72,8 @@ def load_main_module(temp_dir):
         'ACCESS_CHECK_API_URL': 'https://access-check.example.com',
         'ACCESS_CHECK_API_TOKEN': 'access-check-token',
         'ALERTMANAGER_URL': 'http://alertmanager.local:9093',
+        'GITHUB_INCIDENT_REPO': 'freender/homelab-ops',
+        'GITHUB_INCIDENT_TOKEN': 'github-token',
         'TZ': 'UTC',
         'SEERR_BASE_URL': 'https://seerr.example.com',
         'SEERR_PUBLIC_URL': 'https://seerr.example.com',
@@ -95,6 +97,7 @@ def load_main_module(temp_dir):
         'modules.alertmanager',
         'modules.common',
         'modules.firewall',
+        'modules.incidents',
         'modules.maintenance',
         'modules.network_check',
         'modules.redownload',
@@ -172,6 +175,34 @@ class MainAuthTest(unittest.TestCase):
         self.assertIn('📡 Plex Access', labels)
         self.assertIn('🎬 Media', labels)
         self.assertIn('🔕 Alertmanager MW', labels)
+        self.assertIn('🚨 New Incident', labels)
+
+    def test_incident_command_creates_from_replied_alert(self):
+        message = mock.Mock(
+            chat=mock.Mock(id=100),
+            from_user=mock.Mock(id=10),
+            text='/incident',
+            reply_to_message=mock.Mock(text='CRITICAL: plex is missing', caption=None),
+        )
+
+        with mock.patch.object(self.main, '_create_incident_from_telegram') as create_incident:
+            self.main.command_incident(message)
+
+        create_incident.assert_called_once_with(
+            100,
+            'CRITICAL: plex is missing',
+            source_text='CRITICAL: plex is missing',
+        )
+
+    def test_incident_button_is_owner_only(self):
+        call = make_call(20, data='incident_new')
+
+        with mock.patch.object(self.main, '_start_incident_flow') as start_flow, \
+             mock.patch.object(self.main, '_answer_not_allowed') as answer_not_allowed:
+            self.main._handle_incident_new(call)
+
+        start_flow.assert_not_called()
+        answer_not_allowed.assert_called_once_with(100)
 
     def test_home_menu_tracks_latest_message_id(self):
         with mock.patch.object(self.main, '_show_menu', return_value=77) as show_menu:

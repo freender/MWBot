@@ -27,6 +27,8 @@ def load_modules_package(temp_dir):
         'ACCESS_CHECK_API_URL': 'https://access-check.example.com',
         'ACCESS_CHECK_API_TOKEN': 'access-check-token',
         'ALERTMANAGER_URL': 'http://alertmanager.local:9093',
+        'GITHUB_INCIDENT_REPO': 'freender/homelab-ops',
+        'GITHUB_INCIDENT_TOKEN': 'github-token',
         'TZ': 'UTC',
         'SEERR_BASE_URL': 'https://seerr.example.com',
         'SEERR_API_KEY': 'seerr-key',
@@ -49,6 +51,7 @@ def load_modules_package(temp_dir):
         'modules.alertmanager',
         'modules.common',
         'modules.firewall',
+        'modules.incidents',
         'modules.maintenance',
         'modules.network_check',
         'modules.redownload',
@@ -108,8 +111,11 @@ class ModulesTest(unittest.TestCase):
     def test_command_metadata_exposes_menu_only_entrypoint(self):
         self.assertEqual(self.modules.DEFAULT_COMMANDS, {'start': 'Open main menu'})
         self.assertEqual(self.modules.AUTH_COMMANDS, {'start': 'Open main menu'})
-        self.assertEqual(self.modules.OWNER_COMMANDS, {'start': 'Open main menu'})
-        self.assertEqual(self.modules.COMMANDS, {'start': 'Open main menu'})
+        self.assertEqual(self.modules.OWNER_COMMANDS, {
+            'start': 'Open main menu',
+            'incident': 'Create a homelab incident',
+        })
+        self.assertEqual(self.modules.COMMANDS, self.modules.OWNER_COMMANDS)
         self.assertNotIn('mw', self.modules.DEFAULT_COMMANDS)
         self.assertNotIn('help', self.modules.DEFAULT_COMMANDS)
         self.assertNotIn('ip', self.modules.AUTH_COMMANDS)
@@ -145,10 +151,55 @@ class ModulesTest(unittest.TestCase):
         owner_call = bot.set_my_commands.call_args_list[2]
         self.assertEqual(
             [command.command for command in owner_call.args[0]],
-            ['start'],
+            ['start', 'incident'],
         )
         self.assertEqual(owner_call.kwargs['scope'].type, 'chat')
         self.assertEqual(owner_call.kwargs['scope'].chat_id, 3)
+
+    def test_build_incident_title_uses_first_line_and_caps_length(self):
+        self.assertEqual(self.modules.build_incident_title('  ALERT: plex is down\nmore'), 'ALERT: plex is down')
+        self.assertEqual(len(self.modules.build_incident_title('x' * 150)), 100)
+
+    def test_create_incident_opens_issue_and_requests_triage(self):
+        response = mock.Mock(status_code=201)
+        response.json.return_value = {
+            'number': 7,
+            'title': 'plex is down',
+            'html_url': 'https://github.com/freender/homelab-ops/issues/7',
+        }
+        incidents = importlib.import_module('modules.incidents')
+
+        with mock.patch.object(incidents.requests, 'post', return_value=response) as post:
+            incident, error = self.modules.create_incident('plex is down on tower')
+
+        self.assertIsNone(error)
+        self.assertEqual(incident['number'], 7)
+        self.assertNotIn('warning', incident)
+        self.assertEqual(post.call_count, 2)
+
+        issue_call, comment_call = post.call_args_list
+        self.assertEqual(issue_call.kwargs['json']['labels'], ['incident'])
+        self.assertNotIn('github-token', str(issue_call.kwargs['json']))
+        self.assertTrue(comment_call.args[0].endswith('/issues/7/comments'))
+        self.assertTrue(comment_call.kwargs['json']['body'].startswith('/oc '))
+
+    def test_create_incident_warns_when_triage_trigger_fails(self):
+        issue_response = mock.Mock(status_code=201)
+        issue_response.json.return_value = {
+            'number': 7,
+            'title': 'plex is down',
+            'html_url': 'https://github.com/freender/homelab-ops/issues/7',
+        }
+        comment_response = mock.Mock(status_code=403)
+        incidents = importlib.import_module('modules.incidents')
+
+        with mock.patch.object(
+            incidents.requests, 'post', side_effect=[issue_response, comment_response]
+        ):
+            incident, error = self.modules.create_incident('plex is down on tower')
+
+        self.assertIsNone(error)
+        self.assertIn('403', incident['warning'])
 
     def test_parse_seerr_issue_url(self):
         issue_id, error = self.modules.parse_seerr_issue_url('https://seerr.example.com/issues/29')
