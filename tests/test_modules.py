@@ -576,7 +576,7 @@ class ModulesTest(unittest.TestCase):
     def test_is_auth_user_accepts_seerr_telegram_chat_id(self):
         payload = {'results': [{'id': 1}, {'id': 3}], 'pageInfo': {'results': 2}}
         settings = [
-            {'telegramChatId': '733172269'},
+            {'telegramChatId': '123456789'},
             {'telegramChatId': '987654321'},
         ]
         message = mock.Mock(
@@ -592,12 +592,12 @@ class ModulesTest(unittest.TestCase):
     def test_is_owner_uses_seerr_owner_telegram_chat_id(self):
         payload = {'results': [{'id': 1}, {'id': 3}], 'pageInfo': {'results': 2}}
         settings = [
-            {'telegramChatId': '733172269'},
+            {'telegramChatId': '123456789'},
             {'telegramChatId': '987654321'},
         ]
         owner_message = mock.Mock(
             chat=mock.Mock(id=100),
-            from_user=mock.Mock(id=733172269),
+            from_user=mock.Mock(id=123456789),
         )
         user_message = mock.Mock(
             chat=mock.Mock(id=100),
@@ -613,15 +613,15 @@ class ModulesTest(unittest.TestCase):
     def test_warm_seerr_access_cache_can_force_owner_to_authorized_only(self):
         payload = {'results': [{'id': 1}, {'id': 3}], 'pageInfo': {'results': 2}}
         settings = [
-            {'telegramChatId': '733172269'},
+            {'telegramChatId': '123456789'},
             {'telegramChatId': '987654321'},
         ]
         owner_message = mock.Mock(
             chat=mock.Mock(id=100),
-            from_user=mock.Mock(id=733172269),
+            from_user=mock.Mock(id=123456789),
         )
 
-        with mock.patch.object(self.cfg, 'SEERR_ACCESS_TEST_USER_ID', 733172269, create=True):
+        with mock.patch.object(self.cfg, 'SEERR_ACCESS_TEST_USER_ID', 123456789, create=True):
             with mock.patch.object(self.cfg, 'SEERR_ACCESS_TEST_MODE', 'authorized', create=True):
                 with mock.patch.object(self.modules, 'request_json', side_effect=[payload] + settings):
                     self.modules.warm_seerr_access_cache()
@@ -632,7 +632,7 @@ class ModulesTest(unittest.TestCase):
     def test_warm_seerr_access_cache_can_force_user_to_unauthorized(self):
         payload = {'results': [{'id': 1}, {'id': 3}], 'pageInfo': {'results': 2}}
         settings = [
-            {'telegramChatId': '733172269'},
+            {'telegramChatId': '123456789'},
             {'telegramChatId': '987654321'},
         ]
         user_message = mock.Mock(
