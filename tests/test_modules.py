@@ -168,6 +168,15 @@ class ModulesTest(unittest.TestCase):
         self.assertNotIn('Replied-To', body)
         self.assertIn('<!-- incident-source: telegram-alert -->', body)
 
+    def test_triage_trigger_comment_keeps_the_cross_repo_token(self):
+        # The triage workflow lives in GITHUB_INCIDENT_REPO and gates on a leading '/oc'
+        # token. Rewording the rest of this comment is safe; dropping the token disables
+        # triage in that repo with no failure visible from here. See AGENTS.md
+        # "Incident Pipeline Contract".
+        incidents = importlib.import_module('modules.incidents')
+
+        self.assertTrue(incidents.TRIAGE_TRIGGER_COMMENT.startswith('/oc '))
+
     def test_create_incident_opens_issue_and_requests_triage(self):
         response = mock.Mock(status_code=201)
         response.json.return_value = {
@@ -703,6 +712,61 @@ class ModulesTest(unittest.TestCase):
             choices = alertmanager.get_incident_alert_choices()
 
         self.assertEqual([a['labels']['alertname'] for a in choices], ['A', 'B'])
+
+    def test_get_resolvable_alert_choices_excludes_metric_based_alerts(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+        alerts = [
+            {'labels': {'alertname': 'ContainerMissing', 'host': 'tower', 'severity': 'critical'}},
+            {'labels': {'alertname': 'ProxmoxNotification', 'host': 'osiris',
+                        'severity': 'critical', 'source': 'pve'}},
+        ]
+
+        with mock.patch.object(alertmanager, 'get_active_alerts', return_value=alerts):
+            choices = alertmanager.get_resolvable_alert_choices()
+
+        self.assertEqual([a['labels']['alertname'] for a in choices], ['ProxmoxNotification'])
+
+    def test_get_resolvable_alert_choices_returns_none_when_unreachable(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+
+        with mock.patch.object(alertmanager, 'get_active_alerts', return_value=None):
+            self.assertIsNone(alertmanager.get_resolvable_alert_choices())
+
+    def test_resolve_alert_posts_same_labels_with_past_end(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+        alert = {
+            'labels': {'alertname': 'ProxmoxNotification', 'source': 'pve', 'host': 'osiris'},
+            'annotations': {'summary': 'backup failed'},
+            'startsAt': '2026-08-09T05:06:00.000Z',
+        }
+
+        with mock.patch.object(alertmanager, 'request_json', return_value=None) as request_json:
+            self.assertTrue(alertmanager.resolve_alert(alert))
+
+        method, url = request_json.call_args[0]
+        payload = request_json.call_args[1]['payload']
+        self.assertEqual(method, 'POST')
+        self.assertTrue(url.endswith('/api/v2/alerts'))
+        # Alertmanager matches on the exact label set; a changed label creates a
+        # second alert instead of clearing the original.
+        self.assertEqual(payload[0]['labels'], alert['labels'])
+        self.assertEqual(payload[0]['startsAt'], alert['startsAt'])
+        self.assertIn('endsAt', payload[0])
+
+    def test_resolve_alert_reports_failure(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+        alert = {'labels': {'alertname': 'ProxmoxNotification', 'source': 'pve'}}
+
+        with mock.patch.object(alertmanager, 'request_json', side_effect=RuntimeError('boom')):
+            self.assertFalse(alertmanager.resolve_alert(alert))
+
+    def test_resolve_alert_refuses_unlabelled_alert(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+
+        with mock.patch.object(alertmanager, 'request_json') as request_json:
+            self.assertFalse(alertmanager.resolve_alert({'labels': {}}))
+
+        request_json.assert_not_called()
 
     def test_start_alertmanager_mw_creates_independent_state(self):
         with mock.patch('modules.alertmanager.create_silence', return_value='silence-1') as create_silence:

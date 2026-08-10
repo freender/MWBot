@@ -53,6 +53,9 @@ _pending_network_checks = {}
 # -- Firing alerts offered by the incident picker, keyed by "chat_id:user_id" --
 _pending_incident_alerts = {}
 
+# -- One-shot alerts offered by the resolve picker, keyed by "chat_id:user_id" --
+_pending_resolve_alerts = {}
+
 # -- Latest menu message keyed by chat_id -- keeps /start tidy by replacing old menu messages
 _home_menu_messages = {}
 
@@ -204,8 +207,9 @@ def _alertmanager_mw_markup():
     )
     markup.add(
         InlineKeyboardButton('📋 Status', callback_data='am_mw_status'),
-        InlineKeyboardButton('⬅ Back', callback_data='nav_home'),
+        InlineKeyboardButton('✅ Resolve Alert', callback_data='am_resolve'),
     )
+    markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_home'))
     return markup
 
 
@@ -317,7 +321,8 @@ def _show_alertmanager_mw_menu(chat_id, message_id=None):
         'Silence Alertmanager notifications during maintenance.\n\n'
         f'- Start uses a {format_duration(cfg.ALERTMANAGER_OPEN_MW_DURATION)} safety expiry\n'
         '- Status shows API health, active alerts, and maintenance state\n'
-        '- Stop completes the active Alertmanager window',
+        '- Stop completes the active Alertmanager window\n'
+        '- Resolve clears a one-shot event alert that will never clear itself',
         _alertmanager_mw_markup(),
         message_id=message_id,
     )
@@ -641,6 +646,7 @@ def _handle_cancel(call):
     _pending_redownloads.pop(key, None)
     _pending_network_checks.pop(key, None)
     _pending_incident_alerts.pop(key, None)
+    _pending_resolve_alerts.pop(key, None)
     bot.edit_message_reply_markup(
         chat_id=chat_id,
         message_id=call.message.message_id,
@@ -770,6 +776,117 @@ def _handle_alertmanager_mw_status(call):
     _handle_alertmanager_mw_action(call, get_alertmanager_mw_status_text())
 
 
+def _start_resolve_flow(chat_id, user_id, message_id=None):
+    """Offer the one-shot alerts that can be dismissed by hand."""
+    from modules.alertmanager import alert_button_label, get_resolvable_alert_choices
+
+    alerts = get_resolvable_alert_choices()
+    if alerts is None:
+        _show_alertmanager_mw_result(
+            chat_id,
+            'Alertmanager is unavailable, so no alert can be resolved right now.',
+            message_id=message_id,
+        )
+        return
+
+    if not alerts:
+        _show_alertmanager_mw_result(
+            chat_id,
+            'Nothing to resolve. Only one-shot event alerts can be cleared by hand; '
+            'metric-based alerts clear themselves once the condition ends.',
+            message_id=message_id,
+        )
+        return
+
+    _pending_resolve_alerts[_pending_key(chat_id, user_id)] = alerts
+    markup = InlineKeyboardMarkup(row_width=1)
+    for index, alert in enumerate(alerts):
+        markup.add(
+            InlineKeyboardButton(
+                alert_button_label(alert),
+                callback_data=f'am_resolve_pick:{index}',
+            )
+        )
+    markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_am_mw'))
+    _show_menu(
+        chat_id,
+        '✅ <b>Resolve Alert</b>\nPick the event alert to clear.',
+        markup,
+        message_id=message_id,
+    )
+
+
+def _pop_pending_resolve_alert(chat_id, user_id, index_text, keep=False):
+    key = _pending_key(chat_id, user_id)
+    alerts = _pending_resolve_alerts.get(key)
+    try:
+        alert = alerts[int(index_text)]
+    except (TypeError, ValueError, IndexError):
+        _pending_resolve_alerts.pop(key, None)
+        return None
+    if not keep:
+        _pending_resolve_alerts.pop(key, None)
+    return alert
+
+
+def _handle_alertmanager_resolve(call):
+    if not _require_owner_callback(call):
+        return
+    bot.send_chat_action(call.message.chat.id, 'typing')
+    _start_resolve_flow(call.message.chat.id, call.from_user.id, message_id=call.message.message_id)
+
+
+def _handle_alertmanager_resolve_pick(call, index_text):
+    """Confirm before clearing, since a resolved alert cannot be brought back."""
+    if not _require_owner_callback(call):
+        return
+    from modules.alertmanager import alert_button_label
+
+    chat_id = call.message.chat.id
+    alert = _pop_pending_resolve_alert(chat_id, call.from_user.id, index_text, keep=True)
+    if alert is None:
+        _show_alertmanager_mw_result(
+            chat_id,
+            'That alert list expired. Open Resolve Alert again.',
+            message_id=call.message.message_id,
+        )
+        return
+
+    _show_menu(
+        chat_id,
+        '✅ <b>Resolve Alert</b>\n'
+        + escape(alert_button_label(alert, limit=120))
+        + '\n\nClearing only removes the alert from Alertmanager. '
+        'It does not fix the underlying event.',
+        _confirm_cancel_markup(f'am_resolve_do:{index_text}', confirm_label='Resolve'),
+        message_id=call.message.message_id,
+    )
+
+
+def _handle_alertmanager_resolve_confirm(call, index_text):
+    if not _require_owner_callback(call):
+        return
+    from modules.alertmanager import alert_button_label, resolve_alert
+
+    chat_id = call.message.chat.id
+    bot.send_chat_action(chat_id, 'typing')
+    alert = _pop_pending_resolve_alert(chat_id, call.from_user.id, index_text)
+    if alert is None:
+        _show_alertmanager_mw_result(
+            chat_id,
+            'That alert list expired. Open Resolve Alert again.',
+            message_id=call.message.message_id,
+        )
+        return
+
+    label = alert_button_label(alert, limit=120)
+    if resolve_alert(alert):
+        text = f'Resolved: {label}'
+    else:
+        text = f'Unable to resolve: {label}'
+    _show_alertmanager_mw_result(chat_id, text, message_id=call.message.message_id)
+
+
 def _handle_incident_new(call):
     if not _require_owner_callback(call):
         return
@@ -819,6 +936,7 @@ CALLBACK_HANDLERS = {
     'am_mw_start': _handle_alertmanager_mw_start,
     'am_mw_stop': _handle_alertmanager_mw_stop,
     'am_mw_status': _handle_alertmanager_mw_status,
+    'am_resolve': _handle_alertmanager_resolve,
     'incident_new': _handle_incident_new,
 }
 
@@ -837,6 +955,15 @@ def handle_callback(call):
     # Incident: owner picked one of the firing alerts
     if data.startswith('incident_alert:'):
         _handle_incident_alert_choice(call, data.split(':', 1)[1])
+        return
+
+    # Resolve: owner picked a one-shot alert, then confirmed clearing it
+    if data.startswith('am_resolve_pick:'):
+        _handle_alertmanager_resolve_pick(call, data.split(':', 1)[1])
+        return
+
+    if data.startswith('am_resolve_do:'):
+        _handle_alertmanager_resolve_confirm(call, data.split(':', 1)[1])
         return
 
     # Redownload: user picked an issue from the list

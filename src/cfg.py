@@ -95,6 +95,14 @@ ALERTMANAGER_MW_MATCHERS = _get_json('ALERTMANAGER_MW_MATCHERS') if os.getenv('A
     {'name': 'alertname', 'value': '.+', 'isRegex': True, 'isEqual': True},
 ]
 ALERTMANAGER_OPEN_MW_DURATION = _get_duration('ALERTMANAGER_OPEN_MW_DURATION', '12h')
+# Alerts that represent one-shot events rather than a live condition, identified by
+# their `source` label. Only these can be dismissed by hand: a metric-based alert
+# would simply be re-sent by vmalert on its next evaluation.
+ALERTMANAGER_RESOLVABLE_SOURCES = [
+    value.strip()
+    for value in os.getenv('ALERTMANAGER_RESOLVABLE_SOURCES', 'pve').split(',')
+    if value.strip()
+]
 
 # GitHub incident creation
 GITHUB_INCIDENT_REPO = _get_optional('GITHUB_INCIDENT_REPO', 'freender/homelab-ops')

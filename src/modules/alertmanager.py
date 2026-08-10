@@ -92,6 +92,71 @@ def get_active_alerts():
         return None
 
 
+def is_resolvable(alert):
+    """True when an alert is a one-shot event that will never clear itself.
+
+    Proxmox posts discrete events (a failed backup, a failed replication) straight
+    to the Alertmanager API.  Nothing re-evaluates them, so they linger until
+    `resolve_timeout` expires.  Metric-based alerts are excluded because vmalert
+    re-sends them within one evaluation interval, which would make the button look
+    broken rather than declining the request.
+    """
+    source = ((alert.get('labels') or {}).get('source') or '').strip()
+    return bool(source) and source in cfg.ALERTMANAGER_RESOLVABLE_SOURCES
+
+
+def get_resolvable_alert_choices(limit=_ALERT_STATUS_LIMIT):
+    """Active one-shot alerts, sorted for manual resolution.
+
+    Returns None when Alertmanager is unreachable so callers can tell "nothing to
+    resolve" apart from "we could not ask".
+    """
+    if not cfg.ALERTMANAGER_URL:
+        return None
+    alerts = get_active_alerts()
+    if alerts is None:
+        return None
+    resolvable = [alert for alert in alerts if is_resolvable(alert)]
+    return sorted(resolvable, key=_alert_sort_key)[:limit]
+
+
+def resolve_alert(alert):
+    """Resolve a single alert by re-posting its label set with endsAt in the past.
+
+    Alertmanager has no delete endpoint.  An alert is cleared by sending the same
+    label set again with an `endsAt` that has passed, which moves it out of the
+    active list immediately.  The labels must match exactly or a second, distinct
+    alert is created instead.
+    """
+    labels = alert.get('labels') or {}
+    if not labels:
+        logging.error('Refusing to resolve an alert with no labels')
+        return False
+
+    now = datetime.now(timezone.utc)
+    starts_at = alert.get('startsAt')
+    payload = {
+        'labels': labels,
+        'annotations': alert.get('annotations') or {},
+        'endsAt': now.strftime('%Y-%m-%dT%H:%M:%S.000Z'),
+    }
+    if starts_at:
+        payload['startsAt'] = starts_at
+
+    try:
+        request_json('POST', f'{_base_url()}/api/v2/alerts', payload=[payload], timeout=10)
+    except Exception as exc:
+        logging.error('Failed to resolve alert %s: %s', labels.get('alertname'), exc)
+        return False
+
+    logging.info(
+        'Resolved alert %s on %s',
+        labels.get('alertname', 'UnknownAlert'),
+        _alert_target(labels),
+    )
+    return True
+
+
 def _alert_target(labels):
     name = labels.get('name')
     host = labels.get('host')
