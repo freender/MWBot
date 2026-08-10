@@ -9,7 +9,7 @@ MWBot is a Telegram bot for Alertmanager maintenance windows and media/Plex acce
 - Detect a user's Cloudflare-observed ASN through a short-lived Worker session.
 - Authenticate users from Seerr Telegram notification settings.
 - Interactive redownload workflow from the Media menu for Seerr issue, movie, or series URLs that blocklists bad Sonarr/Radarr releases.
-- Owner-only incident creation in the private `homelab-ops` repository from the menu or `/incident`.
+- Owner-only incident creation in the private `homelab-ops` repository, filed from a firing Alertmanager alert.
 
 ## Docker Compose Setup
 
@@ -87,7 +87,7 @@ services:
     - Use Alertmanager MW to start, stop, or inspect an Alertmanager silence.
 3. **Plex Access**: Open the Plex Access section and tap the network-check link. MWBot applies the detected ISP ASN automatically, then updates the same menu with an explicit success or failure result.
 4. **Redownload Control**: Open the Media section and follow the prompts. The bot confirms the target, then blocklists the matching release in Sonarr or Radarr so it is not downloaded again.
-5. **Incidents**: Owners can select New Incident, run `/incident <description>`, or reply to an alert with `/incident`. The issue is created with the `incident` label, and MWBot posts a `/oc` comment that triggers read-only OpenCode triage in that repository.
+5. **Incidents**: Owner-only, and filed from a firing alert only. New Incident (or `/incident`) lists the alerts currently firing in Alertmanager as buttons; picking one files the incident with the alert's labels, annotations, and firing time. There is no free-text path: any text after `/incident` and any replied-to message is ignored, and the flow stops with a message when Alertmanager is unreachable or nothing is firing. This keeps the issue body machine-generated, which is what the triage agent reasons over. The issue is created with the `incident` label, and MWBot posts a `/oc` comment that triggers read-only OpenCode triage in that repository.
 
 ## How Redownload Works
 

@@ -27,24 +27,15 @@ def build_incident_title(summary):
     return first_line[:97].rstrip() + '...'
 
 
-def build_incident_body(summary, source_text=None):
-    sections = [
-        '## Report',
+def build_incident_body(summary):
+    return '\n'.join([
+        '## Alert',
         str(summary).strip()[:MAX_INCIDENT_TEXT_LENGTH],
-    ]
-    if source_text and source_text.strip() != str(summary).strip():
-        sections.extend([
-            '',
-            '## Replied-To Message',
-            source_text.strip()[:MAX_INCIDENT_TEXT_LENGTH],
-        ])
-    sections.extend([
         '',
         '---',
-        'Created from Telegram by MWBot. OpenCode triage runs from the /oc comment below.',
-        '<!-- incident-source: telegram -->',
+        'Filed from a firing Alertmanager alert by MWBot. OpenCode triage runs from the /oc comment below.',
+        '<!-- incident-source: telegram-alert -->',
     ])
-    return '\n'.join(sections)
 
 
 def _github_headers():
@@ -71,13 +62,13 @@ def request_triage(issue_number):
     return None
 
 
-def create_incident(summary, source_text=None):
+def create_incident(summary):
     if not incident_creation_is_configured():
         return None, 'GitHub incident creation is not configured.'
 
     summary = str(summary or '').strip()
     if not summary:
-        return None, 'Describe what is wrong before creating an incident.'
+        return None, 'The selected alert produced no text to file.'
 
     try:
         response = requests.post(
@@ -85,7 +76,7 @@ def create_incident(summary, source_text=None):
             headers=_github_headers(),
             json={
                 'title': build_incident_title(summary),
-                'body': build_incident_body(summary, source_text=source_text),
+                'body': build_incident_body(summary),
                 'labels': ['incident'],
             },
             timeout=30,

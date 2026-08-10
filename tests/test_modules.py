@@ -160,6 +160,14 @@ class ModulesTest(unittest.TestCase):
         self.assertEqual(self.modules.build_incident_title('  ALERT: plex is down\nmore'), 'ALERT: plex is down')
         self.assertEqual(len(self.modules.build_incident_title('x' * 150)), 100)
 
+    def test_build_incident_body_carries_only_the_alert(self):
+        body = self.modules.build_incident_body('SystemdUnitFailed on ace\n\ndetail line')
+
+        self.assertTrue(body.startswith('## Alert\n'))
+        self.assertIn('detail line', body)
+        self.assertNotIn('Replied-To', body)
+        self.assertIn('<!-- incident-source: telegram-alert -->', body)
+
     def test_create_incident_opens_issue_and_requests_triage(self):
         response = mock.Mock(status_code=201)
         response.json.return_value = {
@@ -651,6 +659,50 @@ class ModulesTest(unittest.TestCase):
 
         self.assertTrue(cache['loaded'])
         self.assertFalse(self.modules.is_auth_user(message))
+
+    def test_build_alert_incident_text_without_annotations(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+        alert = {
+            'labels': {'alertname': 'ContainerRestarting', 'name': 'plex', 'host': 'tower'},
+            'annotations': {},
+            'startsAt': '2026-08-09T05:06:00.000Z',
+            'status': {'silencedBy': ['abc']},
+        }
+
+        text = alertmanager.build_alert_incident_text(alert)
+
+        self.assertEqual(text.splitlines()[0], 'ContainerRestarting on plex @ tower')
+        self.assertIn('- host: tower', text)
+        self.assertIn('- firing since: 2026-08-09T05:06:00.000Z', text)
+        self.assertIn('- suppressed: silenced', text)
+
+    def test_alert_button_label_truncates_long_names(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+        alert = {'labels': {'alertname': 'A' * 80, 'host': 'ace', 'severity': 'critical'}}
+
+        label = alertmanager.alert_button_label(alert)
+
+        self.assertTrue(label.startswith('🔴 ace: '))
+        self.assertTrue(label.endswith('…'))
+        self.assertLessEqual(len(label), 48)
+
+    def test_get_incident_alert_choices_returns_none_when_unreachable(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+
+        with mock.patch.object(alertmanager, 'get_active_alerts', return_value=None):
+            self.assertIsNone(alertmanager.get_incident_alert_choices())
+
+    def test_get_incident_alert_choices_sorts_critical_first(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+        alerts = [
+            {'labels': {'alertname': 'B', 'host': 'ace', 'severity': 'warning'}},
+            {'labels': {'alertname': 'A', 'host': 'tower', 'severity': 'critical'}},
+        ]
+
+        with mock.patch.object(alertmanager, 'get_active_alerts', return_value=alerts):
+            choices = alertmanager.get_incident_alert_choices()
+
+        self.assertEqual([a['labels']['alertname'] for a in choices], ['A', 'B'])
 
     def test_start_alertmanager_mw_creates_independent_state(self):
         with mock.patch('modules.alertmanager.create_silence', return_value='silence-1') as create_silence:

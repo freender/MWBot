@@ -100,6 +100,79 @@ def _alert_target(labels):
     return name or host or labels.get('instance') or labels.get('job') or 'unknown target'
 
 
+def _alert_annotation(alert, *names):
+    annotations = alert.get('annotations') or {}
+    for name in names:
+        value = (annotations.get(name) or '').strip()
+        if value:
+            return value
+    return ''
+
+
+def alert_button_label(alert, limit=48):
+    """Short one-line label for an inline keyboard button."""
+    labels = alert.get('labels') or {}
+    severity = (labels.get('severity') or '').lower()
+    icon = {'critical': '🔴', 'warning': '🟡', 'info': '🔵'}.get(severity, '⚪')
+    text = f'{icon} {_alert_target(labels)}: {labels.get("alertname", "UnknownAlert")}'
+    if len(text) > limit:
+        text = text[: limit - 1].rstrip() + '…'
+    return text
+
+
+def build_alert_incident_text(alert):
+    """Render an Alertmanager alert as incident report text.
+
+    The first line becomes the GitHub issue title, so it stays short and specific.
+    """
+    labels = alert.get('labels') or {}
+    alert_name = labels.get('alertname', 'UnknownAlert')
+    target = _alert_target(labels)
+    lines = [f'{alert_name} on {target}']
+
+    description = _alert_annotation(alert, 'description', 'summary', 'message')
+    if description:
+        lines.extend(['', description])
+
+    details = []
+    for key in ('severity', 'host', 'name', 'instance', 'job'):
+        value = (labels.get(key) or '').strip()
+        if value:
+            details.append(f'- {key}: {value}')
+    started = (alert.get('startsAt') or '').strip()
+    if started:
+        details.append(f'- firing since: {started}')
+    status = alert.get('status') or {}
+    markers = []
+    if status.get('silencedBy'):
+        markers.append('silenced')
+    if status.get('inhibitedBy'):
+        markers.append('inhibited')
+    if markers:
+        details.append(f'- suppressed: {", ".join(markers)}')
+    if details:
+        lines.extend(['', 'Alert labels:', *details])
+
+    runbook = _alert_annotation(alert, 'runbook_url', 'runbook')
+    if runbook:
+        lines.extend(['', f'Runbook: {runbook}'])
+    return '\n'.join(lines)
+
+
+def get_incident_alert_choices(limit=_ALERT_STATUS_LIMIT):
+    """Active alerts sorted for incident selection.
+
+    Returns None when Alertmanager is unreachable, so callers can distinguish
+    "nothing is firing" from "we could not ask".
+    """
+    if not cfg.ALERTMANAGER_URL:
+        return None
+    alerts = get_active_alerts()
+    if alerts is None:
+        return None
+    return sorted(alerts, key=_alert_sort_key)[:limit]
+
+
 def _alert_sort_key(alert):
     labels = alert.get('labels') or {}
     severity = labels.get('severity', '').lower()

@@ -50,6 +50,9 @@ _pending_redownloads = {}
 # Short-lived Worker sessions keyed by the authorized Telegram chat and user.
 _pending_network_checks = {}
 
+# -- Firing alerts offered by the incident picker, keyed by "chat_id:user_id" --
+_pending_incident_alerts = {}
+
 # -- Latest menu message keyed by chat_id -- keeps /start tidy by replacing old menu messages
 _home_menu_messages = {}
 
@@ -367,13 +370,9 @@ def command_start(message):
     _show_home_menu(message.chat.id, user_id=_get_user_id(message))
 
 
-def _message_text(message):
-    return (getattr(message, 'text', None) or getattr(message, 'caption', None) or '').strip()
-
-
-def _create_incident_from_telegram(chat_id, summary, source_text=None, message_id=None):
+def _create_incident_from_telegram(chat_id, summary, message_id=None):
     bot.send_chat_action(chat_id, 'typing')
-    incident, error = create_incident(summary, source_text=source_text)
+    incident, error = create_incident(summary)
     if incident is None:
         _show_incident_result(chat_id, error or 'Unable to create the incident.', message_id=message_id)
         return
@@ -385,36 +384,48 @@ def _create_incident_from_telegram(chat_id, summary, source_text=None, message_i
     )
 
 
-def _handle_incident_description(message, expected_user_id, menu_message_id):
-    if _get_user_id(message) != expected_user_id or not is_owner_chat_id(expected_user_id):
-        _answer_not_allowed(message.chat.id)
-        return
-    summary = _message_text(message)
-    if not summary or is_command(summary):
-        _show_incident_result(
-            message.chat.id,
-            'Incident creation cancelled. Use /incident followed by a description.',
-            message_id=menu_message_id,
-        )
-        return
-    _create_incident_from_telegram(message.chat.id, summary, message_id=menu_message_id)
-
-
 def _start_incident_flow(chat_id, user_id, message_id=None):
+    """Incidents are filed from a firing Alertmanager alert only.
+
+    Free-text reports are deliberately unsupported: the issue body is what the triage
+    agent reasons over, so it stays machine-generated and consistent.
+    """
     if not incident_creation_is_configured():
         _show_incident_result(chat_id, 'GitHub incident creation is not configured.', message_id=message_id)
         return
-    prompt_message_id = _show_menu(
+
+    from modules.alertmanager import alert_button_label, get_incident_alert_choices
+
+    bot.send_chat_action(chat_id, 'typing')
+    alerts = get_incident_alert_choices()
+    if alerts is None:
+        _show_incident_result(
+            chat_id,
+            'Alertmanager is unavailable, so no alert can be filed right now.',
+            message_id=message_id,
+        )
+        return
+    if not alerts:
+        _show_incident_result(
+            chat_id,
+            'Nothing is firing. Incidents are filed from an active alert.',
+            message_id=message_id,
+        )
+        return
+
+    _pending_incident_alerts[_pending_key(chat_id, user_id)] = alerts
+    markup = InlineKeyboardMarkup()
+    for index, alert in enumerate(alerts):
+        markup.add(InlineKeyboardButton(
+            alert_button_label(alert),
+            callback_data=f'incident_alert:{index}',
+        ))
+    markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_home'))
+    _show_menu(
         chat_id,
-        '🚨 <b>New Incident</b>\nSend one message describing the symptom and affected host or service.',
-        _cancel_markup(cancel_callback='nav_home', cancel_label='⬅ Back'),
+        '🚨 <b>New Incident</b>\nPick the firing alert to file.',
+        markup,
         message_id=message_id,
-    ) or message_id
-    bot.register_next_step_handler_by_chat_id(
-        chat_id,
-        _handle_incident_description,
-        user_id,
-        prompt_message_id,
     )
 
 
@@ -424,21 +435,7 @@ def command_incident(message):
     if not is_owner_chat_id(user_id):
         _answer_not_allowed(message.chat.id)
         return
-
-    command_text = _message_text(message)
-    summary = command_text.partition(' ')[2].strip()
-    replied_message = getattr(message, 'reply_to_message', None)
-    replied_text = _message_text(replied_message) if replied_message else ''
-    if not summary and replied_text:
-        summary = replied_text
-    if not summary:
-        _start_incident_flow(message.chat.id, user_id)
-        return
-    _create_incident_from_telegram(
-        message.chat.id,
-        summary,
-        source_text=replied_text or None,
-    )
+    _start_incident_flow(message.chat.id, user_id)
 
 
 def _start_redownload_flow(chat_id, user_id, message_id=None):
@@ -643,6 +640,7 @@ def _handle_cancel(call):
     key = _pending_key(chat_id, user_id)
     _pending_redownloads.pop(key, None)
     _pending_network_checks.pop(key, None)
+    _pending_incident_alerts.pop(key, None)
     bot.edit_message_reply_markup(
         chat_id=chat_id,
         message_id=call.message.message_id,
@@ -778,6 +776,31 @@ def _handle_incident_new(call):
     _start_incident_flow(call.message.chat.id, call.from_user.id, message_id=call.message.message_id)
 
 
+def _handle_incident_alert_choice(call, index_text):
+    """Create an incident straight from a selected firing alert."""
+    if not _require_owner_callback(call):
+        return
+    chat_id = call.message.chat.id
+    alerts = _pending_incident_alerts.pop(_pending_key(chat_id, call.from_user.id), None)
+    try:
+        alert = alerts[int(index_text)]
+    except (TypeError, ValueError, IndexError):
+        _show_incident_result(
+            chat_id,
+            'That alert list expired. Run /incident again.',
+            message_id=call.message.message_id,
+        )
+        return
+
+    from modules.alertmanager import build_alert_incident_text
+
+    _create_incident_from_telegram(
+        chat_id,
+        build_alert_incident_text(alert),
+        message_id=call.message.message_id,
+    )
+
+
 CALLBACK_HANDLERS = {
     'cancel': _handle_cancel,
     'menu_close': _handle_menu_close,
@@ -809,6 +832,11 @@ def handle_callback(call):
     handler = CALLBACK_HANDLERS.get(data)
     if handler is not None:
         handler(call)
+        return
+
+    # Incident: owner picked one of the firing alerts
+    if data.startswith('incident_alert:'):
+        _handle_incident_alert_choice(call, data.split(':', 1)[1])
         return
 
     # Redownload: user picked an issue from the list

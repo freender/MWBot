@@ -120,6 +120,16 @@ def button_texts(markup):
     return [button.text for row in markup.keyboard for button in row]
 
 
+def make_alert(alertname='SystemdUnitFailed', host='ace', severity='warning',
+               description='ace has a failed systemd unit'):
+    return {
+        'labels': {'alertname': alertname, 'host': host, 'severity': severity},
+        'annotations': {'description': description},
+        'startsAt': '2026-08-09T05:06:00.000Z',
+        'status': {},
+    }
+
+
 def make_call(user_id, data='callback', chat_id=100, message_id=55):
     return mock.Mock(
         id='call-id',
@@ -177,22 +187,21 @@ class MainAuthTest(unittest.TestCase):
         self.assertIn('🔕 Alertmanager MW', labels)
         self.assertIn('🚨 New Incident', labels)
 
-    def test_incident_command_creates_from_replied_alert(self):
+    def test_incident_command_always_opens_the_alert_picker(self):
+        """Free text and replied-to text are ignored: alerts are the only incident source."""
         message = mock.Mock(
             chat=mock.Mock(id=100),
             from_user=mock.Mock(id=10),
-            text='/incident',
+            text='/incident plex is down',
             reply_to_message=mock.Mock(text='CRITICAL: plex is missing', caption=None),
         )
 
-        with mock.patch.object(self.main, '_create_incident_from_telegram') as create_incident:
+        with mock.patch.object(self.main, '_create_incident_from_telegram') as create_incident, \
+             mock.patch.object(self.main, '_start_incident_flow') as start_flow:
             self.main.command_incident(message)
 
-        create_incident.assert_called_once_with(
-            100,
-            'CRITICAL: plex is missing',
-            source_text='CRITICAL: plex is missing',
-        )
+        create_incident.assert_not_called()
+        start_flow.assert_called_once_with(100, 10)
 
     def test_incident_button_is_owner_only(self):
         call = make_call(20, data='incident_new')
@@ -203,6 +212,99 @@ class MainAuthTest(unittest.TestCase):
 
         start_flow.assert_not_called()
         answer_not_allowed.assert_called_once_with(100)
+
+    def test_incident_command_is_owner_only(self):
+        for user_id in (20, 30):
+            message = mock.Mock(
+                chat=mock.Mock(id=100),
+                from_user=mock.Mock(id=user_id),
+                text='/incident plex is down',
+                reply_to_message=None,
+            )
+
+            with mock.patch.object(self.main, '_create_incident_from_telegram') as create_incident, \
+                 mock.patch.object(self.main, '_start_incident_flow') as start_flow, \
+                 mock.patch.object(self.main, '_answer_not_allowed') as answer_not_allowed:
+                self.main.command_incident(message)
+
+            create_incident.assert_not_called()
+            start_flow.assert_not_called()
+            answer_not_allowed.assert_called_once_with(100)
+
+    def test_incident_flow_lists_firing_alerts(self):
+        alerts = [make_alert(), make_alert(alertname='ContainerMissing', host='tower', severity='critical')]
+
+        with mock.patch('modules.alertmanager.get_incident_alert_choices', return_value=alerts), \
+             mock.patch.object(self.main, '_show_menu') as show_menu:
+            self.main._start_incident_flow(100, 10)
+
+        labels = button_texts(show_menu.call_args.args[2])
+
+        self.assertIn('🟡 ace: SystemdUnitFailed', labels)
+        self.assertIn('🔴 tower: ContainerMissing', labels)
+        self.assertEqual(self.main._pending_incident_alerts['100:10'], alerts)
+
+    def test_incident_flow_offers_no_free_text_escape_hatch(self):
+        alerts = [make_alert()]
+
+        with mock.patch('modules.alertmanager.get_incident_alert_choices', return_value=alerts), \
+             mock.patch.object(self.main, '_show_menu') as show_menu:
+            self.main._start_incident_flow(100, 10)
+
+        labels = button_texts(show_menu.call_args.args[2])
+
+        self.assertEqual(labels, ['🟡 ace: SystemdUnitFailed', '⬅ Back'])
+
+    def test_incident_flow_stops_when_alertmanager_unavailable(self):
+        with mock.patch('modules.alertmanager.get_incident_alert_choices', return_value=None), \
+             mock.patch.object(self.main, '_show_incident_result') as show_result:
+            self.main._start_incident_flow(100, 10)
+
+        self.assertIn('Alertmanager is unavailable', show_result.call_args.args[1])
+        self.assertNotIn('100:10', self.main._pending_incident_alerts)
+
+    def test_incident_flow_stops_when_nothing_is_firing(self):
+        with mock.patch('modules.alertmanager.get_incident_alert_choices', return_value=[]), \
+             mock.patch.object(self.main, '_show_incident_result') as show_result:
+            self.main._start_incident_flow(100, 10)
+
+        self.assertIn('Nothing is firing', show_result.call_args.args[1])
+        self.assertNotIn('100:10', self.main._pending_incident_alerts)
+
+    def test_incident_alert_choice_creates_incident_from_alert(self):
+        self.main._pending_incident_alerts['100:10'] = [make_alert()]
+        call = make_call(10, data='incident_alert:0')
+
+        with mock.patch.object(self.main, '_create_incident_from_telegram') as create_incident:
+            self.main.handle_callback(call)
+
+        summary = create_incident.call_args.args[1]
+
+        self.assertTrue(summary.startswith('SystemdUnitFailed on ace'))
+        self.assertIn('ace has a failed systemd unit', summary)
+        self.assertIn('- severity: warning', summary)
+        self.assertNotIn('100:10', self.main._pending_incident_alerts)
+
+    def test_incident_alert_choice_is_owner_only(self):
+        self.main._pending_incident_alerts['100:20'] = [make_alert()]
+        call = make_call(20, data='incident_alert:0')
+
+        with mock.patch.object(self.main, '_create_incident_from_telegram') as create_incident, \
+             mock.patch.object(self.main, '_answer_not_allowed') as answer_not_allowed:
+            self.main.handle_callback(call)
+
+        create_incident.assert_not_called()
+        answer_not_allowed.assert_called_once_with(100)
+
+    def test_incident_alert_choice_reports_expired_list(self):
+        call = make_call(10, data='incident_alert:0')
+
+        with mock.patch.object(self.main, '_create_incident_from_telegram') as create_incident, \
+             mock.patch.object(self.main, '_show_incident_result') as show_result:
+            self.main.handle_callback(call)
+
+        create_incident.assert_not_called()
+        self.assertIn('expired', show_result.call_args.args[1])
 
     def test_home_menu_tracks_latest_message_id(self):
         with mock.patch.object(self.main, '_show_menu', return_value=77) as show_menu:
