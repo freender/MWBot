@@ -1,0 +1,9 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "references": {
+    "homelab-ops": {
+      "path": "../homelab-ops",
+      "description": "Private incident repository that receives MWBot-filed issues and runs OpenCode triage from the /oc comment"
+    }
+  }
+}

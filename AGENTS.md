@@ -22,6 +22,31 @@
 - Runtime secrets remain in `/mnt/cache/appdata/mwbot/.env` on `helm` with mode `0600`. Do not read, print, copy into the repo, or include their values in logs; pass that file to containers with `--env-file`.
 - The shared Worker API secret is distinct from the Cloudflare deployment/WAF token. Worker browser responses and authenticated API responses must never expose client IPs; ASN and optional AS organization are the only network metadata MWBot stores.
 
+## Incident Pipeline Contract
+
+MWBot is the **producer** for an incident pipeline whose consumer lives in another repository.
+`src/modules/incidents.py` opens an issue in `GITHUB_INCIDENT_REPO` and then posts a comment
+that triggers a triage workflow **in that repo**. Three things are load-bearing across the
+boundary:
+
+- **Repo.** `GITHUB_INCIDENT_REPO` (`src/cfg.py`) defaults to `freender/homelab-ops`. The
+  triage workflow exists only there; pointing this elsewhere files issues nothing consumes.
+- **Trigger token.** `TRIAGE_TRIGGER_COMMENT` must begin with `/oc`. The workflow matches that
+  token in the comment body. The rest of the sentence is prompt context and may be reworded;
+  the leading token may not.
+- **Comment identity.** `GITHUB_INCIDENT_TOKEN` must belong to the repository owner. The
+  workflow also gates on the commenting actor being the owner, so a GitHub App or bot token
+  would post the comment successfully and triage would silently never run.
+
+Breaking any of these produces **no local signal** — the issue is still filed, the comment
+still posts, and the failure is a report that never appears in a repo this suite cannot see.
+`tests/test_modules.py` covers the trigger token only; the repo default and the token identity
+are not testable from here. Change them deliberately.
+
+On the authoring host, `opencode.json` references the consuming repo as `homelab-ops` for
+read access. That repo is private: do not copy its workflow internals, runner details, or
+infrastructure notes into this public repository.
+
 ## Validation
 
 Run before every local deploy and again before committing:
