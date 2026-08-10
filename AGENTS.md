@@ -49,9 +49,12 @@ infrastructure notes into this public repository.
 
 ## Validation
 
-Run before every local deploy and again before committing:
+Run before every local deploy and again before committing. The suite imports `telebot`, which
+is only present in the virtualenv, so activate it first — a bare `python3` fails every test
+with `ModuleNotFoundError: No module named 'telebot'` rather than reporting a real problem:
 
 ```bash
+source .venv/bin/activate
 python3 -m py_compile src/main.py src/cfg.py src/modules/__init__.py \
   src/modules/common.py src/modules/firewall.py src/modules/maintenance.py \
   src/modules/incidents.py src/modules/network_check.py src/modules/redownload.py \
@@ -59,6 +62,10 @@ python3 -m py_compile src/main.py src/cfg.py src/modules/__init__.py \
 python3 -m unittest tests.test_modules tests.test_main
 git diff --check
 ```
+
+`.venv` is gitignored and platform-specific. If it is missing, or was created on a different
+OS and copied here, its interpreter symlink dangles and every test errors on import; rebuild
+it with `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`.
 
 The Worker has no npm dependencies. Run `npm test` from `worker/` when Node is available. On
 `riven`, sync first and use the disposable Node container on `helm`:
