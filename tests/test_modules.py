@@ -188,9 +188,17 @@ class ModulesTest(unittest.TestCase):
 
     def test_triage_trigger_comment_keeps_the_cross_repo_token(self):
         # The triage workflow lives in GITHUB_INCIDENT_REPO and gates on a leading '/oc'
-        # token. Rewording the rest of this comment is safe; dropping the token disables
-        # triage in that repo with no failure visible from here. See AGENTS.md
-        # "Incident Pipeline Contract".
+        # token. Dropping the token disables triage in that repo with no failure visible
+        # from here. See AGENTS.md "Incident Pipeline Contract".
+        #
+        # The trailing space is load-bearing, which is why this asserts '/oc ' and not
+        # '/oc'. opencode derives the model's prompt from this comment body: when the body
+        # is *exactly* a trigger token it substitutes its own canned prompt -- literally
+        # "Summarize this thread" -- and only otherwise passes the body through. A bare
+        # '/oc' therefore still triages successfully and still posts a report, but the
+        # agent was asked to summarise a thread rather than investigate an incident. Green
+        # and wrong is the worst failure available here, so keep text after the token.
+        # Rewording that text is safe; deleting it is not.
         incidents = importlib.import_module('modules.incidents')
 
         self.assertTrue(incidents.TRIAGE_TRIGGER_COMMENT.startswith('/oc '))
