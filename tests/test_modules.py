@@ -1,4 +1,5 @@
 import importlib
+import json
 import os
 from pathlib import Path
 import sys
@@ -164,6 +165,27 @@ class ModulesTest(unittest.TestCase):
         self.assertNotIn('Replied-To', body)
         self.assertIn('<!-- incident-source: telegram-alert -->', body)
 
+    def test_build_incident_body_marks_the_alert_fingerprint(self):
+        # GITHUB_INCIDENT_REPO parses this marker to dedup filings and to correlate a closed
+        # incident back to its alert. See AGENTS.md "Incident Pipeline Contract".
+        body = self.modules.build_incident_body('SystemdUnitFailed on ace', fingerprint='a1b2c3d4e5f60718')
+
+        self.assertIn('<!-- alert-fingerprint: a1b2c3d4e5f60718 -->', body)
+
+    def test_build_incident_body_keeps_the_marker_after_a_long_alert(self):
+        incidents = importlib.import_module('modules.incidents')
+        body = self.modules.build_incident_body('x' * 20000, fingerprint='a1b2c3d4e5f60718')
+
+        self.assertTrue(body.rstrip().endswith('<!-- alert-fingerprint: a1b2c3d4e5f60718 -->'))
+        self.assertLess(len(body), incidents.MAX_INCIDENT_TEXT_LENGTH + 1000)
+
+    def test_build_incident_body_omits_a_malformed_fingerprint(self):
+        # The value is interpolated into a comment another repository parses; anything that
+        # is not fingerprint-shaped is dropped rather than written through.
+        body = self.modules.build_incident_body('alert', fingerprint='not a fingerprint -->')
+
+        self.assertNotIn('alert-fingerprint', body)
+
     def test_triage_trigger_comment_keeps_the_cross_repo_token(self):
         # The triage workflow lives in GITHUB_INCIDENT_REPO and gates on a leading '/oc'
         # token. Rewording the rest of this comment is safe; dropping the token disables
@@ -195,6 +217,165 @@ class ModulesTest(unittest.TestCase):
         self.assertNotIn('github-token', str(issue_call.kwargs['json']))
         self.assertTrue(comment_call.args[0].endswith('/issues/7/comments'))
         self.assertTrue(comment_call.kwargs['json']['body'].startswith('/oc '))
+
+    def test_create_incident_reuses_the_open_incident_for_the_same_alert(self):
+        incidents = importlib.import_module('modules.incidents')
+        listing = mock.Mock(status_code=200)
+        listing.json.return_value = [
+            {'number': 4, 'title': 'other', 'html_url': 'u4', 'body': 'no marker here'},
+            {
+                'number': 5,
+                'title': 'SystemdUnitFailed on ace',
+                'html_url': 'https://github.com/freender/homelab-ops/issues/5',
+                'body': 'body\n<!-- alert-fingerprint: a1b2c3d4e5f60718 -->',
+            },
+        ]
+
+        with mock.patch.object(incidents.requests, 'get', return_value=listing), \
+                mock.patch.object(incidents.requests, 'post') as post:
+            incident, error = self.modules.create_incident('alert', fingerprint='a1b2c3d4e5f60718')
+
+        self.assertIsNone(error)
+        self.assertEqual(incident['number'], 5)
+        self.assertTrue(incident['duplicate'])
+        # Nothing filed and, just as importantly, no second triage run requested.
+        post.assert_not_called()
+
+    def test_create_incident_files_when_no_open_incident_matches(self):
+        incidents = importlib.import_module('modules.incidents')
+        listing = mock.Mock(status_code=200)
+        listing.json.return_value = [
+            {'number': 5, 'title': 'x', 'html_url': 'u5', 'body': '<!-- alert-fingerprint: ffffffffffffffff -->'},
+        ]
+        created = mock.Mock(status_code=201)
+        created.json.return_value = {
+            'number': 8,
+            'title': 'plex is down',
+            'html_url': 'https://github.com/freender/homelab-ops/issues/8',
+        }
+
+        with mock.patch.object(incidents.requests, 'get', return_value=listing), \
+                mock.patch.object(incidents.requests, 'post', return_value=created) as post:
+            incident, error = self.modules.create_incident('alert', fingerprint='a1b2c3d4e5f60718')
+
+        self.assertIsNone(error)
+        self.assertEqual(incident['number'], 8)
+        self.assertNotIn('duplicate', incident)
+        self.assertIn('<!-- alert-fingerprint: a1b2c3d4e5f60718 -->', post.call_args_list[0].kwargs['json']['body'])
+
+    def test_create_incident_files_when_the_dedup_lookup_fails(self):
+        # Failing open risks one duplicate issue; failing closed would silently drop a real
+        # incident. The first is recoverable by hand, the second is not.
+        incidents = importlib.import_module('modules.incidents')
+        created = mock.Mock(status_code=201)
+        created.json.return_value = {
+            'number': 9,
+            'title': 'plex is down',
+            'html_url': 'https://github.com/freender/homelab-ops/issues/9',
+        }
+
+        with mock.patch.object(incidents.requests, 'get', side_effect=incidents.requests.RequestException), \
+                mock.patch.object(incidents.requests, 'post', return_value=created):
+            incident, error = self.modules.create_incident('alert', fingerprint='a1b2c3d4e5f60718')
+
+        self.assertIsNone(error)
+        self.assertEqual(incident['number'], 9)
+
+    def test_find_open_incident_skips_pull_requests(self):
+        incidents = importlib.import_module('modules.incidents')
+        listing = mock.Mock(status_code=200)
+        listing.json.return_value = [{
+            'number': 11,
+            'html_url': 'u11',
+            'body': '<!-- alert-fingerprint: a1b2c3d4e5f60718 -->',
+            'pull_request': {'url': 'p'},
+        }]
+
+        with mock.patch.object(incidents.requests, 'get', return_value=listing):
+            self.assertIsNone(incidents.find_open_incident('a1b2c3d4e5f60718'))
+
+    def _prepared_comment(self, **overrides):
+        comment = {
+            'id': 900,
+            'created_at': '2026-08-11T10:00:00Z',
+            'user': {'login': 'github-actions[bot]'},
+            'issue_url': 'https://api.github.com/repos/freender/homelab-ops/issues/12',
+            'html_url': 'https://github.com/freender/homelab-ops/issues/12#issuecomment-900',
+            'body': '## Fix prepared — `a1b2c3d4e5f6`\n\nReply `/apply a1b2c3d4e5f6` to apply.',
+        }
+        comment.update(overrides)
+        return comment
+
+    def _prepared_fixes(self, comments, state=None):
+        """Run the watcher against a canned comment listing and a temp state file."""
+        incidents = importlib.import_module('modules.incidents')
+        state_path = os.path.join(self.temp_dir.name, 'prepared_fixes.json')
+        if state is not None:
+            with open(state_path, 'w', encoding='utf-8') as handle:
+                json.dump(state, handle)
+        response = mock.Mock(status_code=200)
+        response.json.return_value = comments
+        with mock.patch.object(incidents, 'PREPARED_STATE_FILE', state_path), \
+                mock.patch.object(incidents.requests, 'get', return_value=response) as get:
+            found = incidents.find_prepared_fixes()
+        with open(state_path, encoding='utf-8') as handle:
+            return found, json.load(handle), get
+
+    def test_find_prepared_fixes_announces_nothing_on_the_first_run(self):
+        # Waking up to a notification for every fix ever prepared would train you to ignore
+        # them. The first run only records where to start looking.
+        found, state, get = self._prepared_fixes([self._prepared_comment()])
+
+        self.assertEqual(found, [])
+        self.assertTrue(state['since'])
+        get.assert_not_called()
+
+    def test_find_prepared_fixes_reports_a_new_prepared_fix(self):
+        found, state, _ = self._prepared_fixes(
+            [self._prepared_comment()],
+            state={'since': '2026-08-11T09:00:00Z', 'seen': []},
+        )
+
+        self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]['fix_id'], 'a1b2c3d4e5f6')
+        self.assertEqual(found[0]['issue'], 12)
+        self.assertIn('issuecomment-900', found[0]['url'])
+        self.assertIn(900, state['seen'])
+
+    def test_find_prepared_fixes_ignores_a_quoted_heading_from_a_human(self):
+        # Anyone who can comment could otherwise announce a fix ID that was never prepared.
+        found, _, _ = self._prepared_fixes(
+            [self._prepared_comment(user={'login': 'freender'})],
+            state={'since': '2026-08-11T09:00:00Z', 'seen': []},
+        )
+
+        self.assertEqual(found, [])
+
+    def test_find_prepared_fixes_does_not_repeat_an_announced_comment(self):
+        found, _, _ = self._prepared_fixes(
+            [self._prepared_comment()],
+            state={'since': '2026-08-11T09:00:00Z', 'seen': [900]},
+        )
+
+        self.assertEqual(found, [])
+
+    def test_find_prepared_fixes_ignores_other_flow_comments(self):
+        found, state, _ = self._prepared_fixes(
+            [self._prepared_comment(id=901, body='## Fix applied — `a1b2c3d4e5f6`\n\ndone')],
+            state={'since': '2026-08-11T09:00:00Z', 'seen': []},
+        )
+
+        self.assertEqual(found, [])
+        # The window still advances, or a non-matching comment would be re-read forever.
+        self.assertEqual(state['since'], '2026-08-11T10:00:00Z')
+
+    def test_find_open_incident_does_not_search_without_a_fingerprint(self):
+        incidents = importlib.import_module('modules.incidents')
+
+        with mock.patch.object(incidents.requests, 'get') as get:
+            self.assertIsNone(incidents.find_open_incident(None))
+
+        get.assert_not_called()
 
     def test_create_incident_warns_when_triage_trigger_fails(self):
         issue_response = mock.Mock(status_code=201)

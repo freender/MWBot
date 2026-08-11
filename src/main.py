@@ -17,6 +17,7 @@ from modules import (
     delete_network_check,
     disable_asn_to_firewall_rule,
     execute_redownload,
+    find_prepared_fixes,
     format_duration,
     get_firewall_status_text,
     get_alertmanager_mw_status_text,
@@ -60,9 +61,54 @@ _pending_resolve_alerts = {}
 _home_menu_messages = {}
 
 
+def _announce_prepared_fix(fix):
+    """Tell the owner a fix is waiting, and link to it.
+
+    The message deliberately carries no approve button. Applying a fix deploys to homelab
+    hosts, and the triage repo authorises that by requiring a comment from the repository
+    owner on GitHub. MWBot holds an owner token, so a button here would quietly relocate
+    that authority into this chat. See modules/incidents.py for the full reasoning.
+    """
+    issue = fix.get('issue')
+    markup = InlineKeyboardMarkup(row_width=1)
+    if fix.get('url'):
+        markup.add(InlineKeyboardButton(f'Review fix on #{issue}', url=fix['url']))
+    bot.send_message(
+        cfg.CHAT_ID,
+        '🛠 <b>Fix prepared</b>\n'
+        f'Incident #{escape(str(issue))} has a fix ready for review.\n'
+        f'Approve it on GitHub by replying <code>/apply {escape(fix["fix_id"])}</code>.',
+        reply_markup=markup,
+        parse_mode='HTML',
+    )
+
+
+def watch_prepared_fixes(shutdown_event=None):
+    """Poll the triage repo for fixes waiting on approval. Read-only."""
+    interval = cfg.GITHUB_FIX_WATCH_SECONDS
+    if interval <= 0 or not incident_creation_is_configured():
+        logging.info('Prepared-fix watcher disabled')
+        return
+
+    while shutdown_event is None or not shutdown_event.is_set():
+        try:
+            for fix in find_prepared_fixes():
+                logging.info('Fix %s prepared for incident #%s', fix['fix_id'], fix['issue'])
+                _announce_prepared_fix(fix)
+        except Exception as exc:
+            # A watcher that dies takes its notifications with it silently; keep polling.
+            logging.error('Prepared-fix watch failed: %s', exc, exc_info=True)
+        if shutdown_event is None:
+            time.sleep(interval)
+        elif shutdown_event.wait(interval):
+            break
+
+
 def start_background_threads(active_bot):
     scheduler_thread = threading.Thread(target=schedule_fw_task, args=(shutdown_event,), daemon=True)
     scheduler_thread.start()
+    fix_watch_thread = threading.Thread(target=watch_prepared_fixes, args=(shutdown_event,), daemon=True)
+    fix_watch_thread.start()
 
 
 
@@ -375,11 +421,21 @@ def command_start(message):
     _show_home_menu(message.chat.id, user_id=_get_user_id(message))
 
 
-def _create_incident_from_telegram(chat_id, summary, message_id=None):
+def _create_incident_from_telegram(chat_id, summary, fingerprint=None, message_id=None):
     bot.send_chat_action(chat_id, 'typing')
-    incident, error = create_incident(summary)
+    incident, error = create_incident(summary, fingerprint=fingerprint)
     if incident is None:
         _show_incident_result(chat_id, error or 'Unable to create the incident.', message_id=message_id)
+        return
+    if incident.get('duplicate'):
+        # Nothing was filed and no triage was requested: this alert already has an open
+        # incident.  Say so plainly rather than reporting a creation that did not happen.
+        _show_incident_result(
+            chat_id,
+            f'Already filed as #{incident["number"]}. Nothing new was created.',
+            incident=incident,
+            message_id=message_id,
+        )
         return
     _show_incident_result(
         chat_id,
@@ -909,11 +965,12 @@ def _handle_incident_alert_choice(call, index_text):
         )
         return
 
-    from modules.alertmanager import build_alert_incident_text
+    from modules.alertmanager import alert_fingerprint, build_alert_incident_text
 
     _create_incident_from_telegram(
         chat_id,
         build_alert_incident_text(alert),
+        fingerprint=alert_fingerprint(alert),
         message_id=call.message.message_id,
     )
 

@@ -26,6 +26,7 @@ from modules.incidents import (
     build_incident_body,
     build_incident_title,
     create_incident,
+    find_prepared_fixes,
     incident_creation_is_configured,
 )
 from modules.maintenance import (

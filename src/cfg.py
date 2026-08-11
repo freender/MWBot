@@ -107,3 +107,8 @@ ALERTMANAGER_RESOLVABLE_SOURCES = [
 # GitHub incident creation
 GITHUB_INCIDENT_REPO = _get_optional('GITHUB_INCIDENT_REPO', 'freender/homelab-ops')
 GITHUB_INCIDENT_TOKEN = _get_optional('GITHUB_INCIDENT_TOKEN')
+
+# How often to look for a fix the triage repo has prepared and is waiting on approval for.
+# Zero disables the watcher entirely. This only ever reads and notifies -- approving a fix
+# stays a GitHub action taken by the owner, see modules/incidents.py.
+GITHUB_FIX_WATCH_SECONDS = int(_get_optional('GITHUB_FIX_WATCH_SECONDS', '60') or 0)

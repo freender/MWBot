@@ -224,6 +224,16 @@ def build_alert_incident_text(alert):
     return '\n'.join(lines)
 
 
+def alert_fingerprint(alert):
+    """Alertmanager's hash of the alert's label set.
+
+    Stable for as long as the labels are, which is what makes it usable both as a dedup
+    key when filing and as the correlation key when the triage repo checks whether the
+    alert an incident came from has stopped firing.
+    """
+    return str((alert or {}).get('fingerprint') or '').strip()
+
+
 def get_incident_alert_choices(limit=_ALERT_STATUS_LIMIT):
     """Active alerts sorted for incident selection.
 

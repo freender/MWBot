@@ -26,7 +26,7 @@
 
 MWBot is the **producer** for an incident pipeline whose consumer lives in another repository.
 `src/modules/incidents.py` opens an issue in `GITHUB_INCIDENT_REPO` and then posts a comment
-that triggers a triage workflow **in that repo**. Three things are load-bearing across the
+that triggers a triage workflow **in that repo**. Five things are load-bearing across the
 boundary:
 
 - **Repo.** `GITHUB_INCIDENT_REPO` (`src/cfg.py`) defaults to `freender/homelab-ops`. The
@@ -37,11 +37,22 @@ boundary:
 - **Comment identity.** `GITHUB_INCIDENT_TOKEN` must belong to the repository owner. The
   workflow also gates on the commenting actor being the owner, so a GitHub App or bot token
   would post the comment successfully and triage would silently never run.
+- **Alert fingerprint marker.** `build_incident_body` appends
+  `<!-- alert-fingerprint: <fp> -->`. It is how we refuse to file the same firing alert
+  twice, and the consuming repo reads it to tell whether the alert an incident came from has
+  stopped firing. It is appended after the alert text is truncated so a long alert cannot
+  push it out of the body; keep it that way.
+- **Prepared-fix heading.** `find_prepared_fixes` matches `## Fix prepared — \`<12 hex>\``
+  from `github-actions[bot]` in the consuming repo. It is read-only and only notifies: the
+  approval itself stays a GitHub action taken by the owner, because that comment authorises
+  a deploy to real hosts. **Do not add a button that posts `/apply`** — the token here is an
+  owner token, so it would move that authority into a Telegram chat.
 
 Breaking any of these produces **no local signal** — the issue is still filed, the comment
 still posts, and the failure is a report that never appears in a repo this suite cannot see.
-`tests/test_modules.py` covers the trigger token only; the repo default and the token identity
-are not testable from here. Change them deliberately.
+`tests/test_modules.py` covers the trigger token, the fingerprint marker and the prepared-fix
+parse; the repo default and the token identity are not testable from here. Change them
+deliberately.
 
 On the authoring host, `opencode.json` references the consuming repo as `homelab-ops` for
 read access. That repo is private: do not copy its workflow internals, runner details, or
