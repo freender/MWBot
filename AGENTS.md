@@ -47,6 +47,11 @@ boundary:
   approval itself stays a GitHub action taken by the owner, because that comment authorises
   a deploy to real hosts. **Do not add a button that posts `/apply`** — the token here is an
   owner token, so it would move that authority into a Telegram chat.
+- **Prepared-fix chat target.** `_announce_prepared_fix` sends only to `get_owner_chat_ids()`
+  (the same Seerr-derived identity that gates `/incident`), never `cfg.CHAT_ID`. A fix ID is
+  an approval token for a deploy to every homelab host; `cfg.CHAT_ID` is a shared
+  alert-broadcast chat other people are in. Keep this on the owner identity even if `CHAT_ID`
+  is later split for other notification types.
 
 Breaking any of these produces **no local signal** — the issue is still filed, the comment
 still posts, and the failure is a report that never appears in a repo this suite cannot see.

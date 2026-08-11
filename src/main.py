@@ -23,6 +23,7 @@ from modules import (
     get_alertmanager_mw_status_text,
     get_network_check,
     get_open_seerr_issues,
+    get_owner_chat_ids,
     grant_network_access,
     is_auth_chat_id,
     is_command,
@@ -68,19 +69,33 @@ def _announce_prepared_fix(fix):
     hosts, and the triage repo authorises that by requiring a comment from the repository
     owner on GitHub. MWBot holds an owner token, so a button here would quietly relocate
     that authority into this chat. See modules/incidents.py for the full reasoning.
+
+    Sent only to the owner's own chat(s) -- the same identity that gates /incident, which
+    is what filed the issue in the first place -- and never cfg.CHAT_ID. That is a shared
+    alert-broadcast chat with other people in it; a fix-ID string is an approval token for
+    a deploy to every homelab host, and it has no business landing where anyone but the
+    owner can read it.
     """
     issue = fix.get('issue')
     markup = InlineKeyboardMarkup(row_width=1)
     if fix.get('url'):
         markup.add(InlineKeyboardButton(f'Review fix on #{issue}', url=fix['url']))
-    bot.send_message(
-        cfg.CHAT_ID,
-        '🛠 <b>Fix prepared</b>\n'
-        f'Incident #{escape(str(issue))} has a fix ready for review.\n'
-        f'Approve it on GitHub by replying <code>/apply {escape(fix["fix_id"])}</code>.',
-        reply_markup=markup,
-        parse_mode='HTML',
-    )
+    owner_chat_ids = get_owner_chat_ids()
+    if not owner_chat_ids:
+        logging.error(
+            'No owner chat id resolved; cannot announce prepared fix %s for incident #%s',
+            fix.get('fix_id'), issue,
+        )
+        return
+    for chat_id in owner_chat_ids:
+        bot.send_message(
+            chat_id,
+            '🛠 <b>Fix prepared</b>\n'
+            f'Incident #{escape(str(issue))} has a fix ready for review.\n'
+            f'Approve it on GitHub by replying <code>/apply {escape(fix["fix_id"])}</code>.',
+            reply_markup=markup,
+            parse_mode='HTML',
+        )
 
 
 def watch_prepared_fixes(shutdown_event=None):
