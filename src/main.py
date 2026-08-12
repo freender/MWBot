@@ -17,7 +17,7 @@ from modules import (
     delete_network_check,
     disable_asn_to_firewall_rule,
     execute_redownload,
-    find_prepared_fixes,
+    find_triage_reports,
     format_duration,
     get_firewall_status_text,
     get_alertmanager_mw_status_text,
@@ -62,57 +62,56 @@ _pending_resolve_alerts = {}
 _home_menu_messages = {}
 
 
-def _announce_prepared_fix(fix):
-    """Tell the owner a fix is waiting, and link to it.
+def _announce_triage_report(report):
+    """Tell the owner an incident has been diagnosed, and link to it.
 
-    The message deliberately carries no approve button. Applying a fix deploys to homelab
+    The message deliberately carries no fix button. Fixing an incident deploys to homelab
     hosts, and the triage repo authorises that by requiring a comment from the repository
     owner on GitHub. MWBot holds an owner token, so a button here would quietly relocate
     that authority into this chat. See modules/incidents.py for the full reasoning.
 
     Sent only to the owner's own chat(s) -- the same identity that gates /incident, which
     is what filed the issue in the first place -- and never cfg.CHAT_ID. That is a shared
-    alert-broadcast chat with other people in it; a fix-ID string is an approval token for
-    a deploy to every homelab host, and it has no business landing where anyone but the
-    owner can read it.
+    alert-broadcast chat with other people in it, and a prompt to go and authorise a deploy
+    has no business landing where anyone but the owner can read it.
     """
-    issue = fix.get('issue')
+    issue = report.get('issue')
     markup = InlineKeyboardMarkup(row_width=1)
-    if fix.get('url'):
-        markup.add(InlineKeyboardButton(f'Review fix on #{issue}', url=fix['url']))
+    if report.get('url'):
+        markup.add(InlineKeyboardButton(f'Read triage on #{issue}', url=report['url']))
     owner_chat_ids = get_owner_chat_ids()
     if not owner_chat_ids:
         logging.error(
-            'No owner chat id resolved; cannot announce prepared fix %s for incident #%s',
-            fix.get('fix_id'), issue,
+            'No owner chat id resolved; cannot announce triage report for incident #%s',
+            issue,
         )
         return
     for chat_id in owner_chat_ids:
         bot.send_message(
             chat_id,
-            '🛠 <b>Fix prepared</b>\n'
-            f'Incident #{escape(str(issue))} has a fix ready for review.\n'
-            f'Approve it on GitHub by replying <code>/apply {escape(fix["fix_id"])}</code>.',
+            '🔎 <b>Triage complete</b>\n'
+            f'Incident #{escape(str(issue))} has a report waiting.\n'
+            'Read it, and reply <code>/fix</code> on GitHub if the fix looks right.',
             reply_markup=markup,
             parse_mode='HTML',
         )
 
 
-def watch_prepared_fixes(shutdown_event=None):
-    """Poll the triage repo for fixes waiting on approval. Read-only."""
-    interval = cfg.GITHUB_FIX_WATCH_SECONDS
+def watch_triage_reports(shutdown_event=None):
+    """Poll the triage repo for incidents that have been diagnosed. Read-only."""
+    interval = cfg.GITHUB_TRIAGE_WATCH_SECONDS
     if interval <= 0 or not incident_creation_is_configured():
-        logging.info('Prepared-fix watcher disabled')
+        logging.info('Triage-report watcher disabled')
         return
 
     while shutdown_event is None or not shutdown_event.is_set():
         try:
-            for fix in find_prepared_fixes():
-                logging.info('Fix %s prepared for incident #%s', fix['fix_id'], fix['issue'])
-                _announce_prepared_fix(fix)
+            for report in find_triage_reports():
+                logging.info('Triage report posted for incident #%s', report['issue'])
+                _announce_triage_report(report)
         except Exception as exc:
             # A watcher that dies takes its notifications with it silently; keep polling.
-            logging.error('Prepared-fix watch failed: %s', exc, exc_info=True)
+            logging.error('Triage-report watch failed: %s', exc, exc_info=True)
         if shutdown_event is None:
             time.sleep(interval)
         elif shutdown_event.wait(interval):
@@ -122,9 +121,9 @@ def watch_prepared_fixes(shutdown_event=None):
 def start_background_threads(active_bot):
     scheduler_thread = threading.Thread(target=schedule_fw_task, args=(shutdown_event,), daemon=True)
     scheduler_thread.start()
-    fix_watch_thread = threading.Thread(target=watch_prepared_fixes, args=(shutdown_event,), daemon=True)
-    fix_watch_thread.start()
-
+    triage_watch_thread = threading.Thread(
+        target=watch_triage_reports, args=(shutdown_event,), daemon=True)
+    triage_watch_thread.start()
 
 
 def handle_shutdown(signum, _frame):

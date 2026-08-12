@@ -302,11 +302,10 @@ class MainAuthTest(unittest.TestCase):
         create_incident.assert_not_called()
         self.assertIn('expired', show_result.call_args.args[1])
 
-    def test_announce_prepared_fix_targets_the_owner_chat_only(self):
+    def test_announce_triage_report_targets_the_owner_chat_only(self):
         # owner_chat_ids is {10} from setUp; cfg.CHAT_ID ('100') is the shared alert
-        # broadcast chat and must never see a fix-ID approval token.
-        self.main._announce_prepared_fix({
-            'fix_id': 'abc123def456',
+        # broadcast chat and must never see a prompt to go and authorise a deploy.
+        self.main._announce_triage_report({
             'issue': 15,
             'url': 'https://github.com/freender/homelab-ops/issues/15',
         })
@@ -317,17 +316,30 @@ class MainAuthTest(unittest.TestCase):
         self.assertEqual(chat_id, 10)
         self.assertNotEqual(str(chat_id), self.cfg.CHAT_ID)
         text = args[1] if len(args) > 1 else kwargs.get('text')
-        self.assertIn('Fix prepared', text)
-        self.assertIn('/apply abc123def456', text)
+        self.assertIn('Triage complete', text)
+        self.assertIn('/fix', text)
 
-    def test_announce_prepared_fix_reaches_every_owner_chat(self):
+    def test_announce_triage_report_carries_no_action_button(self):
+        # A button that fixed the incident from here would move the authority to deploy off
+        # GitHub and into this chat, where the owner token is what would be acting.
+        self.main._announce_triage_report({
+            'issue': 15,
+            'url': 'https://github.com/freender/homelab-ops/issues/15',
+        })
+
+        _, kwargs = self.main.bot.sent_messages[0]
+        markup = kwargs.get('reply_markup')
+        buttons = [button for row in (markup.keyboard if markup else []) for button in row]
+        self.assertTrue(all(getattr(button, 'url', None) for button in buttons))
+
+    def test_announce_triage_report_reaches_every_owner_chat(self):
         self.modules._seerr_access_cache.update({
             'authorized_chat_ids': {10, 11, 20},
             'owner_chat_ids': {10, 11},
             'loaded': True,
         })
 
-        self.main._announce_prepared_fix({'fix_id': 'abc123def456', 'issue': 15, 'url': None})
+        self.main._announce_triage_report({'issue': 15, 'url': None})
 
         chat_ids = sorted(
             (args[0] if args else kwargs.get('chat_id'))
@@ -335,7 +347,7 @@ class MainAuthTest(unittest.TestCase):
         )
         self.assertEqual(chat_ids, [10, 11])
 
-    def test_announce_prepared_fix_logs_and_sends_nothing_without_an_owner_chat(self):
+    def test_announce_triage_report_logs_and_sends_nothing_without_an_owner_chat(self):
         self.modules._seerr_access_cache.update({
             'authorized_chat_ids': set(),
             'owner_chat_ids': set(),
@@ -343,7 +355,7 @@ class MainAuthTest(unittest.TestCase):
         })
 
         with self.assertLogs(level='ERROR') as logs:
-            self.main._announce_prepared_fix({'fix_id': 'abc123def456', 'issue': 15, 'url': None})
+            self.main._announce_triage_report({'issue': 15, 'url': None})
 
         self.assertEqual(self.main.bot.sent_messages, [])
         self.assertTrue(any('No owner chat id' in message for message in logs.output))

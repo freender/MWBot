@@ -302,74 +302,75 @@ class ModulesTest(unittest.TestCase):
         with mock.patch.object(incidents.requests, 'get', return_value=listing):
             self.assertIsNone(incidents.find_open_incident('a1b2c3d4e5f60718'))
 
-    def _prepared_comment(self, **overrides):
+    def _report_comment(self, **overrides):
         comment = {
             'id': 900,
             'created_at': '2026-08-11T10:00:00Z',
             'user': {'login': 'github-actions[bot]'},
             'issue_url': 'https://api.github.com/repos/freender/homelab-ops/issues/12',
             'html_url': 'https://github.com/freender/homelab-ops/issues/12#issuecomment-900',
-            'body': '## Fix prepared — `a1b2c3d4e5f6`\n\nReply `/apply a1b2c3d4e5f6` to apply.',
+            'body': '## Verdict\n\nbackup-local points at a retired host.\n\n## Why\n\n...',
         }
         comment.update(overrides)
         return comment
 
-    def _prepared_fixes(self, comments, state=None):
+    def _triage_reports(self, comments, state=None):
         """Run the watcher against a canned comment listing and a temp state file."""
         incidents = importlib.import_module('modules.incidents')
-        state_path = os.path.join(self.temp_dir.name, 'prepared_fixes.json')
+        state_path = os.path.join(self.temp_dir.name, 'triage_reports.json')
         if state is not None:
             with open(state_path, 'w', encoding='utf-8') as handle:
                 json.dump(state, handle)
         response = mock.Mock(status_code=200)
         response.json.return_value = comments
-        with mock.patch.object(incidents, 'PREPARED_STATE_FILE', state_path), \
+        with mock.patch.object(incidents, 'TRIAGE_STATE_FILE', state_path), \
                 mock.patch.object(incidents.requests, 'get', return_value=response) as get:
-            found = incidents.find_prepared_fixes()
+            found = incidents.find_triage_reports()
         with open(state_path, encoding='utf-8') as handle:
             return found, json.load(handle), get
 
-    def test_find_prepared_fixes_announces_nothing_on_the_first_run(self):
-        # Waking up to a notification for every fix ever prepared would train you to ignore
-        # them. The first run only records where to start looking.
-        found, state, get = self._prepared_fixes([self._prepared_comment()])
+    def test_find_triage_reports_announces_nothing_on_the_first_run(self):
+        # Waking up to a notification for every report ever posted would train you to ignore
+        # them. The first run only records where to start looking -- which is also what makes
+        # the rename of the state file safe.
+        found, state, get = self._triage_reports([self._report_comment()])
 
         self.assertEqual(found, [])
         self.assertTrue(state['since'])
         get.assert_not_called()
 
-    def test_find_prepared_fixes_reports_a_new_prepared_fix(self):
-        found, state, _ = self._prepared_fixes(
-            [self._prepared_comment()],
+    def test_find_triage_reports_reports_a_new_report(self):
+        found, state, _ = self._triage_reports(
+            [self._report_comment()],
             state={'since': '2026-08-11T09:00:00Z', 'seen': []},
         )
 
         self.assertEqual(len(found), 1)
-        self.assertEqual(found[0]['fix_id'], 'a1b2c3d4e5f6')
         self.assertEqual(found[0]['issue'], 12)
         self.assertIn('issuecomment-900', found[0]['url'])
         self.assertIn(900, state['seen'])
 
-    def test_find_prepared_fixes_ignores_a_quoted_heading_from_a_human(self):
-        # Anyone who can comment could otherwise announce a fix ID that was never prepared.
-        found, _, _ = self._prepared_fixes(
-            [self._prepared_comment(user={'login': 'freender'})],
+    def test_find_triage_reports_ignores_a_quoted_heading_from_a_human(self):
+        # Anyone who can comment could otherwise announce a diagnosis nobody produced.
+        found, _, _ = self._triage_reports(
+            [self._report_comment(user={'login': 'freender'})],
             state={'since': '2026-08-11T09:00:00Z', 'seen': []},
         )
 
         self.assertEqual(found, [])
 
-    def test_find_prepared_fixes_does_not_repeat_an_announced_comment(self):
-        found, _, _ = self._prepared_fixes(
-            [self._prepared_comment()],
+    def test_find_triage_reports_does_not_repeat_an_announced_comment(self):
+        found, _, _ = self._triage_reports(
+            [self._report_comment()],
             state={'since': '2026-08-11T09:00:00Z', 'seen': [900]},
         )
 
         self.assertEqual(found, [])
 
-    def test_find_prepared_fixes_ignores_other_flow_comments(self):
-        found, state, _ = self._prepared_fixes(
-            [self._prepared_comment(id=901, body='## Fix applied — `a1b2c3d4e5f6`\n\ndone')],
+    def test_find_triage_reports_ignores_other_flow_comments(self):
+        # The fix flow comments on the same issues as the same author; only a report counts.
+        found, state, _ = self._triage_reports(
+            [self._report_comment(id=901, body='## Fixed\n\n**What I ran** ...')],
             state={'since': '2026-08-11T09:00:00Z', 'seen': []},
         )
 

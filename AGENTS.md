@@ -42,20 +42,25 @@ boundary:
   twice, and the consuming repo reads it to tell whether the alert an incident came from has
   stopped firing. It is appended after the alert text is truncated so a long alert cannot
   push it out of the body; keep it that way.
-- **Prepared-fix heading.** `find_prepared_fixes` matches `## Fix prepared — \`<12 hex>\``
-  from `github-actions[bot]` in the consuming repo. It is read-only and only notifies: the
-  approval itself stays a GitHub action taken by the owner, because that comment authorises
-  a deploy to real hosts. **Do not add a button that posts `/apply`** — the token here is an
-  owner token, so it would move that authority into a Telegram chat.
-- **Prepared-fix chat target.** `_announce_prepared_fix` sends only to `get_owner_chat_ids()`
-  (the same Seerr-derived identity that gates `/incident`), never `cfg.CHAT_ID`. A fix ID is
-  an approval token for a deploy to every homelab host; `cfg.CHAT_ID` is a shared
-  alert-broadcast chat other people are in. Keep this on the owner identity even if `CHAT_ID`
-  is later split for other notification types.
+- **Triage report heading.** `find_triage_reports` matches a `## Verdict` heading from
+  `github-actions[bot]` in the consuming repo. It is read-only and only notifies: asking for
+  the fix stays a GitHub action taken by the owner, because that comment authorises a deploy
+  to real hosts. **Do not add a button that posts `/fix`** — the token here is an owner
+  token, so it would move that authority into a Telegram chat.
+
+  This replaced a match on a `## Fix prepared` heading that the consuming repo no longer
+  posts: a fix there used to be prepared as a reviewable artifact and approved by ID, and is
+  now one owner comment. The moment worth a notification moved with it, from "a fix is ready
+  to approve" to "a diagnosis is ready to read".
+- **Triage report chat target.** `_announce_triage_report` sends only to
+  `get_owner_chat_ids()` (the same Seerr-derived identity that gates `/incident`), never
+  `cfg.CHAT_ID`. The message prompts the reader to go and authorise a deploy; `cfg.CHAT_ID`
+  is a shared alert-broadcast chat other people are in. Keep this on the owner identity even
+  if `CHAT_ID` is later split for other notification types.
 
 Breaking any of these produces **no local signal** — the issue is still filed, the comment
 still posts, and the failure is a report that never appears in a repo this suite cannot see.
-`tests/test_modules.py` covers the trigger token, the fingerprint marker and the prepared-fix
+`tests/test_modules.py` covers the trigger token, the fingerprint marker and the triage-report
 parse; the repo default and the token identity are not testable from here. Change them
 deliberately.
 

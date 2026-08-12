@@ -142,31 +142,36 @@ def request_triage(issue_number):
     return None
 
 
-# --- prepared fixes ------------------------------------------------------------------
+# --- triage reports --------------------------------------------------------------------
 #
-# The triage repo answers an incident with a prepared fix and then waits for the owner to
-# reply `/apply <fix-id>` on the issue.  Nothing tells us that happened, so a fix could sit
-# ready for hours before anyone looked.  This watcher closes that gap by *noticing* and
-# saying so.
+# The triage repo answers an incident with a report and then waits for the owner to decide.
+# Nothing tells us the report landed, so it could sit unread for hours while the fault it
+# describes carries on.  This watcher closes that gap by *noticing* and saying so.
 #
-# It deliberately stops there.  MWBot does not post the approval, and must not grow a button
-# that does: the triage repo gates applying on a comment from the repository owner because
+# It deliberately stops there.  MWBot does not act on the report, and must not grow a button
+# that does: the triage repo gates fixing on a comment from the repository owner because
 # that job can deploy to every homelab host, and GITHUB_INCIDENT_TOKEN is an owner token.
 # Wiring an inline button to it would move the authority to deploy from "the owner acting on
 # GitHub" to "whoever can press a button in this chat", with a public repo and a container on
 # helm in between.  The link below costs one tap and moves no boundary.
-PREPARED_STATE_FILE = '/config/prepared_fixes.json'
-PREPARED_HEADING = re.compile(r'^## Fix prepared — `([0-9a-f]{12})`', re.MULTILINE)
+#
+# `## Verdict` is the report's first heading and is part of GITHUB_INCIDENT_REPO's API, in
+# the same way the fingerprint marker above is part of ours.  It replaced a match on a
+# prepared-fix heading that the triage repo no longer posts: fixing is now one owner comment
+# rather than a prepared artifact awaiting approval, so the moment worth a notification moved
+# from "a fix is ready" to "a diagnosis is ready".
+TRIAGE_STATE_FILE = '/config/triage_reports.json'
+TRIAGE_HEADING = re.compile(r'^## Verdict\b', re.MULTILINE)
 REPORT_AUTHOR = 'github-actions[bot]'
 
 # Comment ids already announced, so a restart or an inclusive `since` cannot re-announce
 # one. Capped because this is a notification convenience, not a ledger.
-PREPARED_SEEN_LIMIT = 200
+TRIAGE_SEEN_LIMIT = 200
 
 
-def _prepared_state():
+def _triage_state():
     try:
-        with open(PREPARED_STATE_FILE, 'r', encoding='utf-8') as handle:
+        with open(TRIAGE_STATE_FILE, 'r', encoding='utf-8') as handle:
             state = json.load(handle)
         if isinstance(state, dict):
             return state
@@ -175,19 +180,19 @@ def _prepared_state():
     return {}
 
 
-def _save_prepared_state(state):
+def _save_triage_state(state):
     try:
-        os.makedirs(os.path.dirname(PREPARED_STATE_FILE), exist_ok=True)
-        temp_file = f'{PREPARED_STATE_FILE}.tmp'
+        os.makedirs(os.path.dirname(TRIAGE_STATE_FILE), exist_ok=True)
+        temp_file = f'{TRIAGE_STATE_FILE}.tmp'
         with open(temp_file, 'w', encoding='utf-8') as handle:
             json.dump(state, handle)
-        os.replace(temp_file, PREPARED_STATE_FILE)
+        os.replace(temp_file, TRIAGE_STATE_FILE)
     except OSError as exc:
-        logging.error('Unable to save prepared-fix state: %s', exc)
+        logging.error('Unable to save triage-report state: %s', exc)
 
 
-def find_prepared_fixes():
-    """Fix-prepared comments posted since the last check.
+def find_triage_reports():
+    """Triage reports posted since the last check.
 
     One API call per poll: the repo-wide issue comments endpoint with `since`, rather than
     a listing plus a comments fetch per open incident.
@@ -195,7 +200,7 @@ def find_prepared_fixes():
     if not incident_creation_is_configured():
         return []
 
-    state = _prepared_state()
+    state = _triage_state()
     since = state.get('since')
     seen = state.get('seen') or []
     params = {'per_page': 100, 'sort': 'created', 'direction': 'asc'}
@@ -203,9 +208,11 @@ def find_prepared_fixes():
         params['since'] = since
     else:
         # First run: announce nothing retroactively, just mark the starting point. Waking up
-        # to a notification for every fix ever prepared would train you to ignore them.
+        # to a notification for every report ever posted would train you to ignore them.
+        # This is also what makes the rename from the old state file safe: the missing file
+        # reads as a first run rather than as a backlog.
         state['since'] = _utc_now_iso()
-        _save_prepared_state(state)
+        _save_triage_state(state)
         return []
 
     try:
@@ -234,23 +241,21 @@ def find_prepared_fixes():
         comment_id = comment.get('id')
         if comment_id in seen:
             continue
-        # Only the triage workflow posts a prepared fix. Without this an issue comment that
-        # merely quoted the heading would announce a fix ID that was never prepared.
+        # Only the triage workflow posts a report. Without this an issue comment that merely
+        # quoted the heading would announce a diagnosis nobody produced.
         if ((comment.get('user') or {}).get('login')) != REPORT_AUTHOR:
             continue
-        match = PREPARED_HEADING.search(comment.get('body') or '')
-        if not match:
+        if not TRIAGE_HEADING.search(comment.get('body') or ''):
             continue
 
         seen.append(comment_id)
         found.append({
-            'fix_id': match.group(1),
             'issue': _issue_number_from_url(comment.get('issue_url') or ''),
             'url': comment.get('html_url') or '',
         })
 
-    state['seen'] = seen[-PREPARED_SEEN_LIMIT:]
-    _save_prepared_state(state)
+    state['seen'] = seen[-TRIAGE_SEEN_LIMIT:]
+    _save_triage_state(state)
     return found
 
 
