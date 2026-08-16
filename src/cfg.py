@@ -17,14 +17,6 @@ def _get_optional(name, default=None):
     return value
 
 
-def _get_int(name):
-    value = _require_env(name)
-    try:
-        return int(value)
-    except ValueError as exc:
-        raise RuntimeError(f'Environment variable {name} must be an integer.') from exc
-
-
 def _get_optional_int(name):
     value = os.getenv(name)
     if value is None or value == '':
@@ -43,24 +35,36 @@ def _get_json(name):
         raise RuntimeError(f'Environment variable {name} must contain valid JSON.') from exc
 
 
-def _get_bool(name, default=False):
-    value = os.getenv(name)
-    if value is None or value == '':
-        return default
-    return str(value).strip().lower() in ('1', 'true', 'yes', 'on')
+_DURATION_UNITS = {'m': 'minutes', 'h': 'hours', 'd': 'days'}
+
+
+def _parse_duration(name, value):
+    value = str(value).strip().lower()
+    amount, unit = value[:-1], value[-1:]
+    if not amount.isdigit() or unit not in _DURATION_UNITS or int(amount) <= 0:
+        raise RuntimeError(
+            f'Environment variable {name} must use a duration like 30m, 12h or 7d.'
+        )
+    return timedelta(**{_DURATION_UNITS[unit]: int(amount)})
 
 
 def _get_duration(name, default):
-    value = _get_optional(name, default).strip().lower()
-    if len(value) < 2:
-        raise RuntimeError(f'Environment variable {name} must use a duration like 30m or 12h.')
-    amount = value[:-1]
-    unit = value[-1]
-    if not amount.isdigit() or unit not in ('m', 'h'):
-        raise RuntimeError(f'Environment variable {name} must use a duration like 30m or 12h.')
-    if unit == 'm':
-        return timedelta(minutes=int(amount))
-    return timedelta(hours=int(amount))
+    return _parse_duration(name, _get_optional(name, default))
+
+
+def _get_durations(name, default):
+    """A comma-separated duration list, e.g. `1d,3d,7d`.
+
+    Order is preserved: it is the order the buttons appear in.
+    """
+    durations = [
+        _parse_duration(name, value)
+        for value in _get_optional(name, default).split(',')
+        if value.strip()
+    ]
+    if not durations:
+        raise RuntimeError(f'Environment variable {name} must list at least one duration.')
+    return durations
 
 
 TOKEN = _require_env('TOKEN')
@@ -95,6 +99,17 @@ ALERTMANAGER_MW_MATCHERS = _get_json('ALERTMANAGER_MW_MATCHERS') if os.getenv('A
     {'name': 'alertname', 'value': '.+', 'isRegex': True, 'isEqual': True},
 ]
 ALERTMANAGER_OPEN_MW_DURATION = _get_duration('ALERTMANAGER_OPEN_MW_DURATION', '12h')
+# Choices offered when silencing one alert, in button order. These are for a fault that is
+# already known and tracked -- typically filed as an incident -- where the notification has
+# stopped carrying information: a degraded pool waiting on a disk re-alerts daily for a week
+# and nobody learns anything on day three.
+#
+# One day is the floor on purpose. Sub-day silences do not survive a nightly re-alert, so
+# they only defer the same interruption to tomorrow. The ceiling is deliberately a week: a
+# silence that outlives the attention that created it is how a fault gets forgotten, and
+# nothing here re-notifies when one expires.
+ALERTMANAGER_ALERT_SILENCE_DURATIONS = _get_durations(
+    'ALERTMANAGER_ALERT_SILENCE_DURATIONS', '1d,3d,7d')
 # Alerts that represent one-shot events rather than a live condition, identified by
 # their `source` label. Only these can be dismissed by hand: a metric-based alert
 # would simply be re-sent by vmalert on its next evaluation.

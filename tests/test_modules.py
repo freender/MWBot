@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from unittest import mock
 
@@ -92,18 +92,47 @@ class ModulesTest(unittest.TestCase):
     def tearDown(self):
         self.temp_dir.cleanup()
 
-    def test_parse_duration(self):
-        duration, error = self.modules.parse_duration('30m')
-        self.assertEqual(duration, timedelta(minutes=30))
-        self.assertIsNone(error)
+    def test_format_duration(self):
+        self.assertEqual(self.modules.format_duration(timedelta(minutes=30)), '30m')
+        self.assertEqual(self.modules.format_duration(timedelta(hours=2)), '2h')
+        self.assertEqual(self.modules.format_duration(timedelta(hours=4, minutes=12)), '4h 12m')
+        self.assertEqual(self.modules.format_duration(timedelta(seconds=-5)), '0m')
 
-        duration, error = self.modules.parse_duration('2h')
-        self.assertEqual(duration, timedelta(hours=2))
-        self.assertIsNone(error)
+    def test_format_duration_renders_days(self):
+        """Without this a week-long silence labels its button '168h'."""
+        self.assertEqual(self.modules.format_duration(timedelta(days=1)), '1d')
+        self.assertEqual(self.modules.format_duration(timedelta(days=7)), '7d')
+        self.assertEqual(self.modules.format_duration(timedelta(days=1, hours=6)), '1d 6h')
 
-        duration, error = self.modules.parse_duration('bad')
-        self.assertIsNone(duration)
-        self.assertIn('Invalid duration', error)
+    def test_format_remaining_uses_the_coarsest_unit(self):
+        self.assertEqual(self.modules.format_remaining(timedelta(days=6, hours=23)), '6d')
+        self.assertEqual(self.modules.format_remaining(timedelta(hours=5, minutes=59)), '5h')
+        self.assertEqual(self.modules.format_remaining(timedelta(minutes=12)), '12m')
+        self.assertEqual(self.modules.format_remaining(timedelta(seconds=-5)), '1m')
+
+    def test_duration_config_accepts_days(self):
+        """`1d` in the env must parse; cfg is evaluated at import, so a raise crash-loops."""
+        self.assertEqual(self.cfg._parse_duration('X', '7d'), timedelta(days=7))
+        self.assertEqual(self.cfg._parse_duration('X', '30m'), timedelta(minutes=30))
+        self.assertEqual(self.cfg._parse_duration('X', '12h'), timedelta(hours=12))
+
+    def test_duration_config_rejects_nonsense(self):
+        for value in ('', 'd', '0d', '-1d', '7w', 'abc', '7'):
+            with self.subTest(value=value):
+                with self.assertRaises(RuntimeError):
+                    self.cfg._parse_duration('X', value)
+
+    def test_silence_duration_choices_parse_in_button_order(self):
+        with mock.patch.dict(os.environ, {'X': '1d,3d,7d'}):
+            self.assertEqual(
+                self.cfg._get_durations('X', '2h'),
+                [timedelta(days=1), timedelta(days=3), timedelta(days=7)],
+            )
+
+    def test_silence_duration_choices_reject_an_empty_list(self):
+        with mock.patch.dict(os.environ, {'X': ' , '}):
+            with self.assertRaises(RuntimeError):
+                self.cfg._get_durations('X', '1d')
 
     def test_command_metadata_exposes_menu_only_entrypoint(self):
         self.assertEqual(self.modules.DEFAULT_COMMANDS, {'start': 'Open main menu'})
@@ -301,6 +330,110 @@ class ModulesTest(unittest.TestCase):
 
         with mock.patch.object(incidents.requests, 'get', return_value=listing):
             self.assertIsNone(incidents.find_open_incident('a1b2c3d4e5f60718'))
+
+    def _incident_listing(self, issues):
+        listing = mock.Mock(status_code=200)
+        listing.json.return_value = issues
+        return listing
+
+    def test_incident_index_maps_every_open_incident_by_fingerprint(self):
+        incidents = importlib.import_module('modules.incidents')
+        listing = self._incident_listing([
+            {'number': 5, 'title': 'a', 'html_url': 'u5',
+             'body': '<!-- alert-fingerprint: a1b2c3d4e5f60718 -->'},
+            {'number': 6, 'title': 'b', 'html_url': 'u6',
+             'body': '<!-- alert-fingerprint: ffffffffffffffff -->'},
+            {'number': 7, 'title': 'c', 'html_url': 'u7', 'body': 'no marker'},
+        ])
+
+        with mock.patch.object(incidents.requests, 'get', return_value=listing) as get:
+            index = incidents.get_open_incident_index()
+
+        # One listing for the whole alert list, not one lookup per alert.
+        self.assertEqual(get.call_count, 1)
+        self.assertEqual(sorted(index), ['a1b2c3d4e5f60718', 'ffffffffffffffff'])
+        self.assertEqual(index['a1b2c3d4e5f60718']['number'], 5)
+
+    def test_incident_index_ignores_a_malformed_fingerprint_marker(self):
+        incidents = importlib.import_module('modules.incidents')
+        listing = self._incident_listing([
+            {'number': 5, 'title': 'a', 'html_url': 'u5',
+             'body': '<!-- alert-fingerprint: not-a-fingerprint -->'},
+        ])
+
+        with mock.patch.object(incidents.requests, 'get', return_value=listing):
+            self.assertEqual(incidents.get_open_incident_index(), {})
+
+    def test_incident_index_is_empty_when_github_is_unreachable(self):
+        """A GitHub blip costs the alert list its annotations, not the list."""
+        incidents = importlib.import_module('modules.incidents')
+
+        with mock.patch.object(incidents.requests, 'get', side_effect=incidents.requests.RequestException):
+            self.assertEqual(incidents.get_open_incident_index(use_cache=True), {})
+
+    def test_incident_index_does_not_cache_a_failed_fetch(self):
+        incidents = importlib.import_module('modules.incidents')
+        listing = self._incident_listing([
+            {'number': 5, 'title': 'a', 'html_url': 'u5',
+             'body': '<!-- alert-fingerprint: a1b2c3d4e5f60718 -->'},
+        ])
+
+        with mock.patch.object(incidents.requests, 'get', side_effect=incidents.requests.RequestException):
+            self.assertEqual(incidents.get_open_incident_index(use_cache=True), {})
+        with mock.patch.object(incidents.requests, 'get', return_value=listing):
+            self.assertIn('a1b2c3d4e5f60718', incidents.get_open_incident_index(use_cache=True))
+
+    def test_incident_index_cache_absorbs_repeat_renders(self):
+        incidents = importlib.import_module('modules.incidents')
+        listing = self._incident_listing([
+            {'number': 5, 'title': 'a', 'html_url': 'u5',
+             'body': '<!-- alert-fingerprint: a1b2c3d4e5f60718 -->'},
+        ])
+
+        with mock.patch.object(incidents.requests, 'get', return_value=listing) as get:
+            incidents.get_open_incident_index(use_cache=True)
+            incidents.get_open_incident_index(use_cache=True)
+
+        self.assertEqual(get.call_count, 1)
+
+    def test_dedup_never_reads_the_cache(self):
+        """A cached "not filed" is exactly the stale answer that files a duplicate."""
+        incidents = importlib.import_module('modules.incidents')
+        empty = self._incident_listing([])
+        filed = self._incident_listing([
+            {'number': 5, 'title': 'a', 'html_url': 'u5',
+             'body': '<!-- alert-fingerprint: a1b2c3d4e5f60718 -->'},
+        ])
+
+        with mock.patch.object(incidents.requests, 'get', return_value=empty):
+            incidents.get_open_incident_index(use_cache=True)
+        with mock.patch.object(incidents.requests, 'get', return_value=filed) as get:
+            found = incidents.find_open_incident('a1b2c3d4e5f60718')
+
+        get.assert_called_once()
+        self.assertEqual(found['number'], 5)
+        self.assertTrue(found['duplicate'])
+
+    def test_filing_an_incident_invalidates_the_index_cache(self):
+        """The list is what you return to right after filing; it must show the new number."""
+        incidents = importlib.import_module('modules.incidents')
+        created = mock.Mock(status_code=201)
+        created.json.return_value = {
+            'number': 8, 'title': 'x',
+            'html_url': 'https://github.com/freender/homelab-ops/issues/8',
+        }
+        filed = self._incident_listing([
+            {'number': 8, 'title': 'x', 'html_url': 'u8',
+             'body': '<!-- alert-fingerprint: a1b2c3d4e5f60718 -->'},
+        ])
+
+        with mock.patch.object(incidents.requests, 'get', return_value=self._incident_listing([])), \
+                mock.patch.object(incidents.requests, 'post', return_value=created):
+            incidents.get_open_incident_index(use_cache=True)
+            self.modules.create_incident('alert', fingerprint='a1b2c3d4e5f60718')
+
+        with mock.patch.object(incidents.requests, 'get', return_value=filed):
+            self.assertIn('a1b2c3d4e5f60718', incidents.get_open_incident_index(use_cache=True))
 
     def _report_comment(self, **overrides):
         comment = {
@@ -768,42 +901,28 @@ class ModulesTest(unittest.TestCase):
         self.assertIn('may not be available in English at all', text)
         self.assertIn('Only continue if you still want to replace it.', text)
 
-    def test_is_auth_user_accepts_seerr_telegram_chat_id(self):
+    def test_authorization_accepts_a_seerr_telegram_chat_id(self):
         payload = {'results': [{'id': 1}, {'id': 3}], 'pageInfo': {'results': 2}}
         settings = [
             {'telegramChatId': '123456789'},
             {'telegramChatId': '987654321'},
         ]
-        message = mock.Mock(
-            chat=mock.Mock(id=999),
-            from_user=mock.Mock(id=987654321),
-        )
-
         with mock.patch.object(self.modules, 'request_json', side_effect=[payload] + settings):
             self.modules.warm_seerr_access_cache()
 
-        self.assertTrue(self.modules.is_auth_user(message))
+        self.assertTrue(self.modules.is_auth_chat_id(987654321))
 
-    def test_is_owner_uses_seerr_owner_telegram_chat_id(self):
+    def test_ownership_uses_the_seerr_owner_telegram_chat_id(self):
         payload = {'results': [{'id': 1}, {'id': 3}], 'pageInfo': {'results': 2}}
         settings = [
             {'telegramChatId': '123456789'},
             {'telegramChatId': '987654321'},
         ]
-        owner_message = mock.Mock(
-            chat=mock.Mock(id=100),
-            from_user=mock.Mock(id=123456789),
-        )
-        user_message = mock.Mock(
-            chat=mock.Mock(id=100),
-            from_user=mock.Mock(id=987654321),
-        )
-
         with mock.patch.object(self.modules, 'request_json', side_effect=[payload] + settings):
             self.modules.warm_seerr_access_cache()
 
-        self.assertTrue(self.modules.is_owner(owner_message))
-        self.assertFalse(self.modules.is_owner(user_message))
+        self.assertTrue(self.modules.is_owner_chat_id(123456789))
+        self.assertFalse(self.modules.is_owner_chat_id(987654321))
 
     def test_warm_seerr_access_cache_can_force_owner_to_authorized_only(self):
         payload = {'results': [{'id': 1}, {'id': 3}], 'pageInfo': {'results': 2}}
@@ -811,18 +930,13 @@ class ModulesTest(unittest.TestCase):
             {'telegramChatId': '123456789'},
             {'telegramChatId': '987654321'},
         ]
-        owner_message = mock.Mock(
-            chat=mock.Mock(id=100),
-            from_user=mock.Mock(id=123456789),
-        )
-
         with mock.patch.object(self.cfg, 'SEERR_ACCESS_TEST_USER_ID', 123456789, create=True):
             with mock.patch.object(self.cfg, 'SEERR_ACCESS_TEST_MODE', 'authorized', create=True):
                 with mock.patch.object(self.modules, 'request_json', side_effect=[payload] + settings):
                     self.modules.warm_seerr_access_cache()
 
-        self.assertTrue(self.modules.is_auth_user(owner_message))
-        self.assertFalse(self.modules.is_owner(owner_message))
+        self.assertTrue(self.modules.is_auth_chat_id(123456789))
+        self.assertFalse(self.modules.is_owner_chat_id(123456789))
 
     def test_warm_seerr_access_cache_can_force_user_to_unauthorized(self):
         payload = {'results': [{'id': 1}, {'id': 3}], 'pageInfo': {'results': 2}}
@@ -830,30 +944,20 @@ class ModulesTest(unittest.TestCase):
             {'telegramChatId': '123456789'},
             {'telegramChatId': '987654321'},
         ]
-        user_message = mock.Mock(
-            chat=mock.Mock(id=100),
-            from_user=mock.Mock(id=987654321),
-        )
-
         with mock.patch.object(self.cfg, 'SEERR_ACCESS_TEST_USER_ID', 987654321, create=True):
             with mock.patch.object(self.cfg, 'SEERR_ACCESS_TEST_MODE', 'unauthorized', create=True):
                 with mock.patch.object(self.modules, 'request_json', side_effect=[payload] + settings):
                     self.modules.warm_seerr_access_cache()
 
-        self.assertFalse(self.modules.is_auth_user(user_message))
-        self.assertFalse(self.modules.is_owner(user_message))
+        self.assertFalse(self.modules.is_auth_chat_id(987654321))
+        self.assertFalse(self.modules.is_owner_chat_id(987654321))
 
     def test_warm_seerr_access_cache_uses_empty_access_when_seerr_fails(self):
-        message = mock.Mock(
-            chat=mock.Mock(id=2),
-            from_user=mock.Mock(id=2),
-        )
-
         with mock.patch.object(self.modules, 'request_json', side_effect=RuntimeError('boom')):
             cache = self.modules.warm_seerr_access_cache()
 
         self.assertTrue(cache['loaded'])
-        self.assertFalse(self.modules.is_auth_user(message))
+        self.assertFalse(self.modules.is_auth_chat_id(2))
 
     def test_build_alert_incident_text_without_annotations(self):
         alertmanager = importlib.import_module('modules.alertmanager')
@@ -881,13 +985,13 @@ class ModulesTest(unittest.TestCase):
         self.assertTrue(label.endswith('…'))
         self.assertLessEqual(len(label), 48)
 
-    def test_get_incident_alert_choices_returns_none_when_unreachable(self):
+    def test_get_alert_choices_returns_none_when_unreachable(self):
         alertmanager = importlib.import_module('modules.alertmanager')
 
         with mock.patch.object(alertmanager, 'get_active_alerts', return_value=None):
-            self.assertIsNone(alertmanager.get_incident_alert_choices())
+            self.assertIsNone(alertmanager.get_alert_choices())
 
-    def test_get_incident_alert_choices_sorts_critical_first(self):
+    def test_get_alert_choices_sorts_critical_first(self):
         alertmanager = importlib.import_module('modules.alertmanager')
         alerts = [
             {'labels': {'alertname': 'B', 'host': 'ace', 'severity': 'warning'}},
@@ -895,28 +999,137 @@ class ModulesTest(unittest.TestCase):
         ]
 
         with mock.patch.object(alertmanager, 'get_active_alerts', return_value=alerts):
-            choices = alertmanager.get_incident_alert_choices()
+            choices = alertmanager.get_alert_choices()
 
         self.assertEqual([a['labels']['alertname'] for a in choices], ['A', 'B'])
 
-    def test_get_resolvable_alert_choices_excludes_metric_based_alerts(self):
+    def test_get_alert_choices_keeps_alerts_no_single_action_applies_to(self):
+        """One list for the whole section; eligibility is decided per alert, not by filtering."""
         alertmanager = importlib.import_module('modules.alertmanager')
-        alerts = [
-            {'labels': {'alertname': 'ContainerMissing', 'host': 'tower', 'severity': 'critical'}},
-            {'labels': {'alertname': 'ProxmoxNotification', 'host': 'osiris',
-                        'severity': 'critical', 'source': 'pve'}},
-        ]
+        metric_alert = {'labels': {'alertname': 'ContainerMissing', 'host': 'tower', 'severity': 'critical'}}
+        event_alert = {'labels': {'alertname': 'ProxmoxNotification', 'host': 'osiris',
+                                  'severity': 'critical', 'source': 'pve'}}
 
-        with mock.patch.object(alertmanager, 'get_active_alerts', return_value=alerts):
-            choices = alertmanager.get_resolvable_alert_choices()
+        with mock.patch.object(alertmanager, 'get_active_alerts', return_value=[metric_alert, event_alert]):
+            choices = alertmanager.get_alert_choices()
 
-        self.assertEqual([a['labels']['alertname'] for a in choices], ['ProxmoxNotification'])
+        self.assertEqual(len(choices), 2)
+        self.assertFalse(alertmanager.is_resolvable(metric_alert))
+        self.assertTrue(alertmanager.is_resolvable(event_alert))
 
-    def test_get_resolvable_alert_choices_returns_none_when_unreachable(self):
+    def test_silence_alert_matches_that_alert_exactly(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+        alert = {'labels': {'alertname': 'ContainerMissing', 'host': 'tower', 'severity': 'critical'}}
+
+        with mock.patch.object(alertmanager, 'create_silence', return_value='sil-1') as create_silence:
+            self.assertEqual(alertmanager.silence_alert(alert, timedelta(hours=2)), 'sil-1')
+
+        matchers = create_silence.call_args.kwargs['matchers']
+        self.assertEqual(
+            matchers,
+            [
+                {'name': 'alertname', 'value': 'ContainerMissing', 'isRegex': False, 'isEqual': True},
+                {'name': 'host', 'value': 'tower', 'isRegex': False, 'isEqual': True},
+                {'name': 'severity', 'value': 'critical', 'isRegex': False, 'isEqual': True},
+            ],
+        )
+        self.assertEqual(create_silence.call_args.kwargs['comment'], alertmanager.ALERT_SILENCE_COMMENT)
+
+    def test_silence_alert_refuses_an_unlabelled_alert(self):
         alertmanager = importlib.import_module('modules.alertmanager')
 
-        with mock.patch.object(alertmanager, 'get_active_alerts', return_value=None):
-            self.assertIsNone(alertmanager.get_resolvable_alert_choices())
+        with mock.patch.object(alertmanager, 'create_silence') as create_silence:
+            self.assertIsNone(alertmanager.silence_alert({'labels': {}}, timedelta(hours=2)))
+
+        create_silence.assert_not_called()
+
+    def test_unsilence_ignores_the_blanket_maintenance_silence(self):
+        """Unsilencing one alert must not lift the window muting all of them."""
+        alertmanager = importlib.import_module('modules.alertmanager')
+        alert = {'labels': {'alertname': 'X'}, 'status': {'silencedBy': ['mw-1', 'alert-1']}}
+        silences = {
+            'mw-1': {'comment': 'mwbot-alertmanager-maintenance'},
+            'alert-1': {'comment': alertmanager.ALERT_SILENCE_COMMENT},
+        }
+
+        with mock.patch.object(alertmanager, 'get_silence', side_effect=lambda sid: silences[sid]), \
+             mock.patch.object(alertmanager, 'expire_silence', return_value=True) as expire_silence:
+            self.assertTrue(alertmanager.unsilence_alert(alert))
+
+        expire_silence.assert_called_once_with('alert-1')
+
+    def test_silence_index_resolves_a_whole_list_in_one_call(self):
+        """Rendering the list must not cost a GET per silenced alert."""
+        alertmanager = importlib.import_module('modules.alertmanager')
+        payload = [{'id': 'a', 'comment': alertmanager.ALERT_SILENCE_COMMENT},
+                   {'id': 'b', 'comment': 'mwbot-alertmanager-maintenance'}]
+
+        with mock.patch.object(alertmanager, 'request_json', return_value=payload) as request_json:
+            index = alertmanager.silence_index()
+
+        request_json.assert_called_once()
+        self.assertTrue(request_json.call_args[0][1].endswith('/api/v2/silences'))
+
+        alert = {'labels': {'alertname': 'X'}, 'status': {'silencedBy': ['a', 'b']}}
+        with mock.patch.object(alertmanager, 'get_silence') as get_silence:
+            self.assertEqual(alertmanager.alert_silence_ids(alert, index=index), ['a'])
+        get_silence.assert_not_called()
+
+    def test_alert_silenced_until_reports_the_latest_of_our_silences(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+        index = {
+            'a': {'comment': alertmanager.ALERT_SILENCE_COMMENT, 'endsAt': '2026-08-20T10:00:00.000Z'},
+            'b': {'comment': alertmanager.ALERT_SILENCE_COMMENT, 'endsAt': '2026-08-23T10:00:00.000Z'},
+            'mw': {'comment': 'mwbot-alertmanager-maintenance', 'endsAt': '2026-09-01T10:00:00.000Z'},
+        }
+        alert = {'labels': {'alertname': 'X'}, 'status': {'silencedBy': ['a', 'b', 'mw']}}
+
+        ends_at = alertmanager.alert_silenced_until(alert, index=index)
+
+        self.assertEqual(ends_at, datetime(2026, 8, 23, 10, 0, tzinfo=timezone.utc))
+
+    def test_alert_silenced_until_is_none_without_one_of_ours(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+        index = {'mw': {'comment': 'mwbot-alertmanager-maintenance',
+                        'endsAt': '2026-09-01T10:00:00.000Z'}}
+        alert = {'labels': {'alertname': 'X'}, 'status': {'silencedBy': ['mw']}}
+
+        self.assertIsNone(alertmanager.alert_silenced_until(alert, index=index))
+
+    def test_alert_silenced_until_survives_an_unparseable_timestamp(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+        index = {'a': {'comment': alertmanager.ALERT_SILENCE_COMMENT, 'endsAt': 'not-a-time'}}
+        alert = {'labels': {'alertname': 'X'}, 'status': {'silencedBy': ['a']}}
+
+        self.assertIsNone(alertmanager.alert_silenced_until(alert, index=index))
+
+    def test_get_silences_is_empty_when_alertmanager_is_unreachable(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+
+        with mock.patch.object(alertmanager, 'request_json', side_effect=RuntimeError('boom')):
+            self.assertEqual(alertmanager.get_silences(), [])
+
+    def test_unsilence_reports_false_when_nothing_of_ours_applies(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+        alert = {'labels': {'alertname': 'X'}, 'status': {'silencedBy': ['mw-1']}}
+
+        with mock.patch.object(alertmanager, 'get_silence',
+                               return_value={'comment': 'mwbot-alertmanager-maintenance'}), \
+             mock.patch.object(alertmanager, 'expire_silence') as expire_silence:
+            self.assertFalse(alertmanager.unsilence_alert(alert))
+
+        expire_silence.assert_not_called()
+
+    def test_unsilence_expires_every_silence_even_after_one_fails(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+        alert = {'labels': {'alertname': 'X'}, 'status': {'silencedBy': ['a', 'b']}}
+
+        with mock.patch.object(alertmanager, 'get_silence',
+                               return_value={'comment': alertmanager.ALERT_SILENCE_COMMENT}), \
+             mock.patch.object(alertmanager, 'expire_silence', side_effect=[False, True]) as expire_silence:
+            self.assertFalse(alertmanager.unsilence_alert(alert))
+
+        self.assertEqual([call.args[0] for call in expire_silence.call_args_list], ['a', 'b'])
 
     def test_resolve_alert_posts_same_labels_with_past_end(self):
         alertmanager = importlib.import_module('modules.alertmanager')
@@ -988,11 +1201,10 @@ class ModulesTest(unittest.TestCase):
         })
 
         with mock.patch('modules.alertmanager.get_silence', return_value={'status': {'state': 'active'}}), \
-             mock.patch('modules.alertmanager.get_alertmanager_alert_status_text', return_value='UP: Alertmanager API'), \
              mock.patch('modules.alertmanager.create_silence') as create_silence:
             result = self.modules.start_alertmanager_mw()
 
-        self.assertIn('Alertmanager maintenance is active.', result)
+        self.assertIn('already active', result)
         create_silence.assert_not_called()
 
     def test_start_alertmanager_mw_rolls_back_when_state_save_fails(self):
@@ -1007,20 +1219,48 @@ class ModulesTest(unittest.TestCase):
         )
         expire_silence.assert_called_once_with('silence-1')
 
-    def test_alertmanager_mw_status_verifies_active_silence(self):
+    def test_alertmanager_window_text_verifies_active_silence(self):
         self.maintenance.save_alertmanager_mw_state({
             'silence_id': 'silence-1',
             'expires_at': (datetime.now(ZoneInfo(self.cfg.TZ)) + timedelta(hours=1)).isoformat(),
             'duration': '1h',
         })
 
-        with mock.patch('modules.alertmanager.get_silence', return_value={'status': {'state': 'active'}}), \
-             mock.patch('modules.alertmanager.get_alertmanager_alert_status_text', return_value='UP: Alertmanager API'):
-            result = self.modules.get_alertmanager_mw_status_text()
+        with mock.patch('modules.alertmanager.get_silence', return_value={'status': {'state': 'active'}}):
+            result = self.modules.get_alertmanager_window_text()
 
-        self.assertIn('UP: Alertmanager API', result)
-        self.assertIn('Alertmanager maintenance is active.', result)
-        self.assertIn('Remaining:', result)
+        self.assertIn('Maintenance active', result)
+        self.assertIn('left', result)
+
+    def test_alertmanager_window_text_is_empty_when_no_window_is_active(self):
+        """Empty means inactive: it is what the alerts menu keys its button off."""
+        self.assertEqual(self.modules.get_alertmanager_window_text(), '')
+
+    def test_alertmanager_window_text_clears_state_for_an_expired_silence(self):
+        self.maintenance.save_alertmanager_mw_state({
+            'silence_id': 'silence-1',
+            'expires_at': (datetime.now(ZoneInfo(self.cfg.TZ)) + timedelta(hours=1)).isoformat(),
+            'duration': '1h',
+        })
+
+        with mock.patch('modules.alertmanager.get_silence', return_value={'status': {'state': 'expired'}}):
+            self.assertEqual(self.modules.get_alertmanager_window_text(), '')
+
+        self.assertIsNone(self.modules.load_alertmanager_mw_state())
+
+    def test_alertmanager_window_text_keeps_an_unverifiable_window(self):
+        """Dropping it would leave Alertmanager muted with no button left to unmute it."""
+        self.maintenance.save_alertmanager_mw_state({
+            'silence_id': 'silence-1',
+            'expires_at': (datetime.now(ZoneInfo(self.cfg.TZ)) + timedelta(hours=1)).isoformat(),
+            'duration': '1h',
+        })
+
+        with mock.patch('modules.alertmanager.get_silence', return_value=None):
+            result = self.modules.get_alertmanager_window_text()
+
+        self.assertIn('unverified', result)
+        self.assertIsNotNone(self.modules.load_alertmanager_mw_state())
 
     def test_get_active_alerts_includes_suppressed_alerts(self):
         alertmanager = importlib.import_module('modules.alertmanager')
@@ -1045,7 +1285,7 @@ class ModulesTest(unittest.TestCase):
     def test_get_active_alerts_drops_always_firing_alertnames(self):
         """Watchdog is a dead-man's switch, not a condition: it must never be reported.
 
-        Filtering at the fetch is what keeps the incident picker from offering to file a
+        Filtering at the fetch is what keeps the alerts list from offering to file a
         GitHub issue against a healthy monitoring pipeline.
         """
         alertmanager = importlib.import_module('modules.alertmanager')
@@ -1054,12 +1294,10 @@ class ModulesTest(unittest.TestCase):
 
         with mock.patch.object(alertmanager, 'request_json', return_value=payload):
             self.assertEqual(alertmanager.get_active_alerts(), [real])
-            self.assertEqual(alertmanager.get_incident_alert_choices(), [real])
+            choices = alertmanager.get_alert_choices()
 
-        with mock.patch.object(alertmanager, 'request_json', return_value=payload):
-            status = alertmanager.get_alertmanager_alert_status_text()
-        self.assertNotIn('Watchdog', status)
-        self.assertIn('DOWN: 1 active alert\n', status)
+        self.assertEqual(choices, [real])
+        self.assertEqual(alertmanager.format_alert_summary(choices), '1 active alert')
 
     def test_get_active_alerts_reports_nothing_when_only_excluded_fire(self):
         alertmanager = importlib.import_module('modules.alertmanager')
@@ -1067,8 +1305,8 @@ class ModulesTest(unittest.TestCase):
 
         with mock.patch.object(alertmanager, 'request_json', return_value=payload):
             self.assertEqual(alertmanager.get_active_alerts(), [])
-            status = alertmanager.get_alertmanager_alert_status_text()
-        self.assertIn('DOWN: None', status)
+            summary = alertmanager.format_alert_summary(alertmanager.get_alert_choices())
+        self.assertEqual(summary, 'All clear. Nothing is firing.')
 
     def test_get_active_alerts_unreachable_is_not_an_empty_list(self):
         """None and [] must stay distinguishable, or an outage reads as 'all clear'."""
@@ -1077,54 +1315,47 @@ class ModulesTest(unittest.TestCase):
         with mock.patch.object(alertmanager, 'request_json', side_effect=RuntimeError('boom')):
             self.assertIsNone(alertmanager.get_active_alerts())
 
-    def test_alertmanager_status_reports_all_clear(self):
+    def test_alert_summary_reports_all_clear(self):
         alertmanager = importlib.import_module('modules.alertmanager')
 
-        self.assertEqual(
-            alertmanager.format_alert_status([]),
-            'UP: Alertmanager API\nDOWN: None\nAll monitored alert conditions are clear.',
-        )
+        self.assertEqual(alertmanager.format_alert_summary([]), 'All clear. Nothing is firing.')
 
-    def test_alertmanager_status_sorts_and_marks_suppressed_alerts(self):
+    def test_alert_summary_distinguishes_unreachable_from_all_clear(self):
+        """None and [] must not read the same, or an outage looks like a healthy homelab."""
+        alertmanager = importlib.import_module('modules.alertmanager')
+
+        self.assertIn('unavailable', alertmanager.format_alert_summary(None))
+
+    def test_alert_summary_counts_suppressed_alerts(self):
         alertmanager = importlib.import_module('modules.alertmanager')
         alerts = [
-            {
-                'labels': {
-                    'alertname': 'ImportantContainerMissing',
-                    'name': 'radarr',
-                    'host': 'tower',
-                    'severity': 'warning',
-                },
-                'status': {},
-            },
-            {
-                'labels': {
-                    'alertname': 'CriticalContainerMissing',
-                    'name': 'plex',
-                    'host': 'tower',
-                    'severity': 'critical',
-                },
-                'status': {'silencedBy': ['silence-1']},
-            },
+            {'labels': {'alertname': 'A', 'severity': 'warning'}, 'status': {}},
+            {'labels': {'alertname': 'B', 'severity': 'critical'},
+             'status': {'silencedBy': ['silence-1']}},
+            {'labels': {'alertname': 'C', 'severity': 'info'},
+             'status': {'inhibitedBy': ['alert-1']}},
         ]
 
-        result = alertmanager.format_alert_status(alerts)
+        self.assertEqual(
+            alertmanager.format_alert_summary(alerts),
+            '3 active alerts · 2 suppressed',
+        )
 
-        self.assertIn('DOWN: 2 active alerts (1 suppressed)', result)
-        self.assertIn('- CRITICAL plex @ tower: CriticalContainerMissing [silenced]', result)
-        self.assertIn('- WARNING radarr @ tower: ImportantContainerMissing', result)
-        self.assertLess(result.index('CRITICAL'), result.index('WARNING'))
+    def test_alert_summary_does_not_pluralise_a_single_alert(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+        alerts = [{'labels': {'alertname': 'A', 'severity': 'warning'}, 'status': {}}]
 
-    def test_alertmanager_status_caps_long_alert_list(self):
+        self.assertEqual(alertmanager.format_alert_summary(alerts), '1 active alert')
+
+    def test_alert_choices_are_capped(self):
         alertmanager = importlib.import_module('modules.alertmanager')
         alerts = [
             {'labels': {'alertname': f'Alert{index}', 'name': f'app-{index}', 'severity': 'warning'}}
             for index in range(3)
         ]
 
-        result = alertmanager.format_alert_status(alerts, limit=2)
-
-        self.assertIn('- ...and 1 more', result)
+        with mock.patch.object(alertmanager, 'get_active_alerts', return_value=alerts):
+            self.assertEqual(len(alertmanager.get_alert_choices(limit=2)), 2)
 
     def test_stop_alertmanager_mw_expires_silence_and_clears_state(self):
         self.maintenance.save_alertmanager_mw_state({

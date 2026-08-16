@@ -4,6 +4,7 @@ import logging
 import signal
 import threading
 import time
+from datetime import datetime, timezone
 from html import escape
 from urllib.parse import urlparse, urlunparse
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
@@ -19,9 +20,11 @@ from modules import (
     execute_redownload,
     find_triage_reports,
     format_duration,
+    format_remaining,
     get_firewall_status_text,
-    get_alertmanager_mw_status_text,
+    get_alertmanager_window_text,
     get_network_check,
+    get_open_incident_index,
     get_open_seerr_issues,
     get_owner_chat_ids,
     grant_network_access,
@@ -52,11 +55,9 @@ _pending_redownloads = {}
 # Short-lived Worker sessions keyed by the authorized Telegram chat and user.
 _pending_network_checks = {}
 
-# -- Firing alerts offered by the incident picker, keyed by "chat_id:user_id" --
-_pending_incident_alerts = {}
-
-# -- One-shot alerts offered by the resolve picker, keyed by "chat_id:user_id" --
-_pending_resolve_alerts = {}
+# -- Alerts currently listed for a user, keyed by "chat_id:user_id".  One stash for the
+# whole alerts section: file, resolve and silence all index into the list that was drawn.
+_pending_alerts = {}
 
 # -- Latest menu message keyed by chat_id -- keeps /start tidy by replacing old menu messages
 _home_menu_messages = {}
@@ -230,10 +231,9 @@ def _home_markup(user_id):
             InlineKeyboardButton('🎬 Media', callback_data='nav_media'),
         )
     if is_owner_chat_id(user_id):
-        markup.add(
-            InlineKeyboardButton('🔕 Alertmanager MW', callback_data='nav_am_mw'),
-            InlineKeyboardButton('🚨 New Incident', callback_data='incident_new'),
-        )
+        # One section, not two. Maintenance windows and incident filing were separate
+        # menus over the same noun -- a firing alert -- so they are verbs in here now.
+        markup.add(InlineKeyboardButton('🚨 Alerts', callback_data='nav_alerts'))
     markup.add(InlineKeyboardButton('✖ Close', callback_data='menu_close'))
     return markup
 
@@ -255,20 +255,6 @@ def _media_markup():
     seerr_browser_url = _get_seerr_browser_url()
     if seerr_browser_url:
         markup.add(InlineKeyboardButton('🌐 Open Seerr', url=seerr_browser_url))
-    markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_home'))
-    return markup
-
-
-def _alertmanager_mw_markup():
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton('▶ Start', callback_data='am_mw_start'),
-        InlineKeyboardButton('⏹ Stop', callback_data='am_mw_stop'),
-    )
-    markup.add(
-        InlineKeyboardButton('📋 Status', callback_data='am_mw_status'),
-        InlineKeyboardButton('✅ Resolve Alert', callback_data='am_resolve'),
-    )
     markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_home'))
     return markup
 
@@ -307,21 +293,14 @@ def _media_result_markup():
     return markup
 
 
-def _alertmanager_mw_result_markup():
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
-        InlineKeyboardButton('📋 Status', callback_data='am_mw_status'),
-        InlineKeyboardButton('⬅ Back', callback_data='nav_am_mw'),
-    )
-    markup.add(InlineKeyboardButton('🏠 Home', callback_data='nav_home'))
-    return markup
-
-
 def _incident_result_markup(incident=None):
-    markup = InlineKeyboardMarkup(row_width=1)
-    if incident:
+    markup = InlineKeyboardMarkup(row_width=2)
+    if incident and incident.get('url'):
         markup.add(InlineKeyboardButton(f'Open Incident #{incident["number"]}', url=incident['url']))
-    markup.add(InlineKeyboardButton('🏠 Home', callback_data='nav_home'))
+    markup.add(
+        InlineKeyboardButton('⬅ Alerts', callback_data='nav_alerts'),
+        InlineKeyboardButton('🏠 Home', callback_data='nav_home'),
+    )
     return markup
 
 
@@ -331,7 +310,7 @@ def _show_home_menu(chat_id, user_id=None, message_id=None):
     has_owner_access = is_owner_chat_id(display_user_id)
     if has_auth_access or has_owner_access:
         id_line = f'<b>Your Telegram ID:</b> <code>{display_user_id}</code>\n\n'
-        body = '<b>Choose a section</b> to manage Plex, redownloads, or maintenance windows.'
+        body = '<b>Choose a section</b> to manage Plex, redownloads, or alerts.'
     else:
         id_line = (
             f'<b>Your Telegram ID:</b> <code>{display_user_id}</code>\n'
@@ -374,20 +353,6 @@ def _show_media_menu(chat_id, message_id=None):
     )
 
 
-def _show_alertmanager_mw_menu(chat_id, message_id=None):
-    _show_menu(
-        chat_id,
-        '🔕 <b>Alertmanager Maintenance</b>\n'
-        'Silence Alertmanager notifications during maintenance.\n\n'
-        f'- Start uses a {format_duration(cfg.ALERTMANAGER_OPEN_MW_DURATION)} safety expiry\n'
-        '- Status shows API health, active alerts, and maintenance state\n'
-        '- Stop completes the active Alertmanager window\n'
-        '- Resolve clears a one-shot event alert that will never clear itself',
-        _alertmanager_mw_markup(),
-        message_id=message_id,
-    )
-
-
 def _show_plex_result(chat_id, text, user_id=None, message_id=None):
     display_user_id = user_id if user_id is not None else chat_id
     _show_menu(
@@ -407,20 +372,230 @@ def _show_media_result(chat_id, text, message_id=None):
     )
 
 
-def _show_alertmanager_mw_result(chat_id, text, message_id=None):
-    _show_menu(
-        chat_id,
-        '🔕 <b>Alertmanager Maintenance</b>\n' + escape(text),
-        _alertmanager_mw_result_markup(),
-        message_id=message_id,
-    )
-
-
 def _show_incident_result(chat_id, text, incident=None, message_id=None):
     _show_menu(
         chat_id,
         '🚨 <b>Homelab Incident</b>\n' + escape(text),
         _incident_result_markup(incident=incident),
+        message_id=message_id,
+    )
+
+
+# ── Alerts ───────────────────────────────────────────────────────────
+#
+# A firing alert is one object with three possible answers: file it as an incident,
+# clear it if it is a one-shot event, or mute it.  Those used to live in two top-level
+# menus -- "Alertmanager MW" and "New Incident" -- which meant the same list of alerts
+# was rendered three ways (as status text, as incident buttons, as resolve buttons) and
+# no single view let you see an alert and act on it.
+#
+# Here the live list *is* the menu, and the actions hang off the alert you picked.
+
+def _alert_incident_index(use_cache=True):
+    """Open incidents keyed by alert fingerprint, or {} if we could not ask.
+
+    Failure degrades the list to un-annotated alerts rather than failing the render:
+    GitHub being unreachable is not a reason to stop showing what is on fire.
+    """
+    try:
+        return get_open_incident_index(use_cache=use_cache)
+    except Exception as exc:
+        logging.warning('Unable to load open incidents for the alert list: %s', exc)
+        return {}
+
+
+def _load_alerts(chat_id, user_id):
+    """Fetch the alert list and stash it for the callbacks that index into it."""
+    from modules.alertmanager import get_alert_choices
+
+    alerts = get_alert_choices()
+    if alerts is not None:
+        _pending_alerts[_pending_key(chat_id, user_id)] = alerts
+    return alerts
+
+
+def _pending_alert(chat_id, user_id, index_text):
+    alerts = _pending_alerts.get(_pending_key(chat_id, user_id))
+    try:
+        return alerts[int(index_text)]
+    except (TypeError, ValueError, IndexError):
+        return None
+
+
+def _alert_silence_remaining(alert, silences=None):
+    """How long our silence on this alert still has to run, e.g. '6d'."""
+    from modules.alertmanager import alert_silenced_until
+
+    ends_at = alert_silenced_until(alert, index=silences)
+    if ends_at is None:
+        return None
+    return format_remaining(ends_at - datetime.now(timezone.utc))
+
+
+def _alert_list_button(alert, index, incidents, silences=None):
+    from modules.alertmanager import alert_button_label, alert_fingerprint
+
+    incident = incidents.get(alert_fingerprint(alert))
+    # The "→ #N" is the whole point of annotating here: an alert that is already filed
+    # should say so on the list, not after you have tapped File Incident and been told
+    # a duplicate was refused.
+    suffix = f' → #{incident["number"]}' if incident else ''
+    # A week-long silence is the one most likely to be forgotten, so the row it hides
+    # behind says when it lapses. Without this, silencing removes the alert from your
+    # attention and nothing puts it back.
+    remaining = _alert_silence_remaining(alert, silences=silences)
+    if remaining:
+        suffix += f' 🔇 {remaining}'
+    return InlineKeyboardButton(
+        alert_button_label(alert, limit=max(24, 48 - len(suffix))) + suffix,
+        callback_data=f'alert_pick:{index}',
+    )
+
+
+def _alert_silence_index(alerts):
+    """One silence lookup for the whole list, and only when something is suppressed."""
+    from modules.alertmanager import silence_index
+
+    if not any((alert.get('status') or {}).get('silencedBy') for alert in alerts or []):
+        return {}
+    return silence_index()
+
+
+def _show_alerts_menu(chat_id, user_id, message_id=None, notice=None):
+    from modules.alertmanager import format_alert_summary
+
+    bot.send_chat_action(chat_id, 'typing')
+    alerts = _load_alerts(chat_id, user_id)
+    incidents = _alert_incident_index() if alerts else {}
+    silences = _alert_silence_index(alerts)
+    # Read before the buttons are built: this also clears a window whose silence has
+    # already expired, so the footer offers Start rather than End for a dead window.
+    window = get_alertmanager_window_text()
+
+    lines = ['🚨 <b>Alerts</b>']
+    if notice:
+        lines.append(escape(notice))
+    lines.append(escape(format_alert_summary(alerts)))
+    if window:
+        lines.append(escape(window))
+    if alerts:
+        lines.append('')
+        lines.append('Pick an alert to file, resolve, or silence it.')
+
+    markup = InlineKeyboardMarkup(row_width=1)
+    for index, alert in enumerate(alerts or []):
+        markup.add(_alert_list_button(alert, index, incidents, silences=silences))
+
+    if window:
+        maintenance_button = InlineKeyboardButton('⏹ End Maintenance', callback_data='am_mw_stop')
+    else:
+        maintenance_button = InlineKeyboardButton(
+            f'🔕 Maintenance {format_duration(cfg.ALERTMANAGER_OPEN_MW_DURATION)}',
+            callback_data='am_mw_start',
+        )
+    markup.row(
+        maintenance_button,
+        InlineKeyboardButton('🔄 Refresh', callback_data='nav_alerts'),
+    )
+    markup.add(InlineKeyboardButton('🏠 Home', callback_data='nav_home'))
+    _show_menu(chat_id, '\n'.join(lines), markup, message_id=message_id)
+
+
+def _show_alert_actions(chat_id, user_id, index_text, message_id=None):
+    """The action sheet for one alert."""
+    from modules.alertmanager import (
+        alert_fingerprint,
+        build_alert_incident_text,
+        is_resolvable,
+    )
+
+    alert = _pending_alert(chat_id, user_id, index_text)
+    if alert is None:
+        _show_alerts_menu(
+            chat_id,
+            user_id,
+            message_id=message_id,
+            notice='That alert list expired; this is the current one.',
+        )
+        return
+
+    incident = _alert_incident_index().get(alert_fingerprint(alert))
+    # Deliberately the same text that would be filed, so what you read here is exactly
+    # what triage receives -- no second rendering to drift out of step with the first.
+    lines = ['🚨 <b>Alert</b>', escape(build_alert_incident_text(alert))]
+
+    markup = InlineKeyboardMarkup(row_width=2)
+    if incident:
+        lines.append('')
+        lines.append(f'Already filed as #{escape(str(incident["number"]))}.')
+        if incident.get('url'):
+            markup.add(InlineKeyboardButton(
+                f'🔗 Open Incident #{incident["number"]}',
+                url=incident['url'],
+            ))
+    else:
+        markup.add(InlineKeyboardButton(
+            '🚨 File Incident',
+            callback_data=f'alert_incident:{index_text}',
+        ))
+
+    actions = []
+    remaining = _alert_silence_remaining(alert)
+    if remaining:
+        lines.append('')
+        lines.append(f'🔇 Silenced by MWBot — {escape(remaining)} left.')
+        actions.append(InlineKeyboardButton(
+            '🔔 Unsilence',
+            callback_data=f'alert_unsilence:{index_text}',
+        ))
+    else:
+        actions.append(InlineKeyboardButton(
+            '🔕 Silence',
+            callback_data=f'alert_silence:{index_text}',
+        ))
+    # Offered only for one-shot events. A metric alert would be re-sent by vmalert within
+    # one evaluation interval, making the button look broken rather than declined.
+    if is_resolvable(alert):
+        actions.append(InlineKeyboardButton(
+            '✅ Resolve',
+            callback_data=f'alert_resolve:{index_text}',
+        ))
+    markup.row(*actions)
+    markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_alerts'))
+    _show_menu(chat_id, '\n'.join(lines), markup, message_id=message_id)
+
+
+def _show_silence_picker(chat_id, user_id, index_text, message_id=None):
+    """Ask how long before silencing, rather than assuming one duration fits.
+
+    A fixed duration cannot serve both "quiet until tomorrow" and "quiet while a disk is
+    on order": the second one would need re-silencing every day, which is the daily
+    interruption it was meant to stop.
+    """
+    from modules.alertmanager import alert_button_label
+
+    alert = _pending_alert(chat_id, user_id, index_text)
+    if alert is None:
+        _show_alerts_menu(chat_id, user_id, message_id=message_id,
+                          notice='That alert list expired; this is the current one.')
+        return
+
+    markup = InlineKeyboardMarkup(row_width=len(cfg.ALERTMANAGER_ALERT_SILENCE_DURATIONS))
+    markup.row(*[
+        InlineKeyboardButton(
+            format_duration(duration),
+            callback_data=f'alert_silence_do:{index_text}:{choice}',
+        )
+        for choice, duration in enumerate(cfg.ALERTMANAGER_ALERT_SILENCE_DURATIONS)
+    ])
+    markup.add(InlineKeyboardButton('⬅ Back', callback_data=f'alert_pick:{index_text}'))
+    _show_menu(
+        chat_id,
+        '🔕 <b>Silence Alert</b>\n'
+        + escape(alert_button_label(alert, limit=120))
+        + '\n\nFor how long? Nothing re-notifies when a silence lapses, '
+        'so the alert simply becomes audible again.',
+        markup,
         message_id=message_id,
     )
 
@@ -459,20 +634,23 @@ def _create_incident_from_telegram(chat_id, summary, fingerprint=None, message_i
     )
 
 
-def _start_incident_flow(chat_id, user_id, message_id=None):
-    """Incidents are filed from a firing Alertmanager alert only.
+def _show_incident_picker(chat_id, user_id, message_id=None):
+    """The direct filing list behind /incident.
 
-    Free-text reports are deliberately unsupported: the issue body is what the triage
-    agent reasons over, so it stays machine-generated and consistent.
+    The Alerts menu reaches filing in two taps -- pick the alert, then File Incident --
+    because it also offers resolve and silence on the way.  /incident is the one-tap
+    path for when filing is already the decision, so its buttons file straight away.
+
+    Incidents are filed from a firing Alertmanager alert only.  Free-text reports are
+    deliberately unsupported: the issue body is what the triage agent reasons over, so
+    it stays machine-generated and consistent.
     """
     if not incident_creation_is_configured():
         _show_incident_result(chat_id, 'GitHub incident creation is not configured.', message_id=message_id)
         return
 
-    from modules.alertmanager import alert_button_label, get_incident_alert_choices
-
     bot.send_chat_action(chat_id, 'typing')
-    alerts = get_incident_alert_choices()
+    alerts = _load_alerts(chat_id, user_id)
     if alerts is None:
         _show_incident_result(
             chat_id,
@@ -488,14 +666,13 @@ def _start_incident_flow(chat_id, user_id, message_id=None):
         )
         return
 
-    _pending_incident_alerts[_pending_key(chat_id, user_id)] = alerts
-    markup = InlineKeyboardMarkup()
+    incidents = _alert_incident_index()
+    markup = InlineKeyboardMarkup(row_width=1)
     for index, alert in enumerate(alerts):
-        markup.add(InlineKeyboardButton(
-            alert_button_label(alert),
-            callback_data=f'incident_alert:{index}',
-        ))
-    markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_home'))
+        button = _alert_list_button(alert, index, incidents)
+        button.callback_data = f'alert_incident:{index}'
+        markup.add(button)
+    markup.add(InlineKeyboardButton('⬅ Alerts', callback_data='nav_alerts'))
     _show_menu(
         chat_id,
         '🚨 <b>New Incident</b>\nPick the firing alert to file.',
@@ -510,7 +687,7 @@ def command_incident(message):
     if not is_owner_chat_id(user_id):
         _answer_not_allowed(message.chat.id)
         return
-    _start_incident_flow(message.chat.id, user_id)
+    _show_incident_picker(message.chat.id, user_id)
 
 
 def _start_redownload_flow(chat_id, user_id, message_id=None):
@@ -715,8 +892,7 @@ def _handle_cancel(call):
     key = _pending_key(chat_id, user_id)
     _pending_redownloads.pop(key, None)
     _pending_network_checks.pop(key, None)
-    _pending_incident_alerts.pop(key, None)
-    _pending_resolve_alerts.pop(key, None)
+    _pending_alerts.pop(key, None)
     bot.edit_message_reply_markup(
         chat_id=chat_id,
         message_id=call.message.message_id,
@@ -754,10 +930,10 @@ def _handle_nav_media(call):
     _show_media_menu(call.message.chat.id, message_id=call.message.message_id)
 
 
-def _handle_nav_alertmanager_mw(call):
+def _handle_nav_alerts(call):
     if not _require_owner_callback(call):
         return
-    _show_alertmanager_mw_menu(call.message.chat.id, message_id=call.message.message_id)
+    _show_alerts_menu(call.message.chat.id, call.from_user.id, message_id=call.message.message_id)
 
 
 def _handle_plex_allow(call):
@@ -821,160 +997,52 @@ def _handle_media_redownload(call):
     _start_redownload_flow(call.message.chat.id, call.from_user.id, message_id=call.message.message_id)
 
 
-def _handle_alertmanager_mw_action(call, result):
-    _show_alertmanager_mw_result(call.message.chat.id, result, message_id=call.message.message_id)
-
-
 def _handle_alertmanager_mw_start(call):
     if not _require_owner_callback(call):
         return
-    bot.send_chat_action(call.message.chat.id, 'typing')
-    _handle_alertmanager_mw_action(call, start_alertmanager_mw())
+    # Every alert action lands back on the list with what happened as a notice, so the
+    # result and the state it produced are the same screen.
+    _show_alerts_menu(
+        call.message.chat.id,
+        call.from_user.id,
+        message_id=call.message.message_id,
+        notice=start_alertmanager_mw(),
+    )
 
 
 def _handle_alertmanager_mw_stop(call):
     if not _require_owner_callback(call):
         return
-    bot.send_chat_action(call.message.chat.id, 'typing')
-    _handle_alertmanager_mw_action(call, stop_alertmanager_mw())
-
-
-def _handle_alertmanager_mw_status(call):
-    if not _require_owner_callback(call):
-        return
-    bot.send_chat_action(call.message.chat.id, 'typing')
-    _handle_alertmanager_mw_action(call, get_alertmanager_mw_status_text())
-
-
-def _start_resolve_flow(chat_id, user_id, message_id=None):
-    """Offer the one-shot alerts that can be dismissed by hand."""
-    from modules.alertmanager import alert_button_label, get_resolvable_alert_choices
-
-    alerts = get_resolvable_alert_choices()
-    if alerts is None:
-        _show_alertmanager_mw_result(
-            chat_id,
-            'Alertmanager is unavailable, so no alert can be resolved right now.',
-            message_id=message_id,
-        )
-        return
-
-    if not alerts:
-        _show_alertmanager_mw_result(
-            chat_id,
-            'Nothing to resolve. Only one-shot event alerts can be cleared by hand; '
-            'metric-based alerts clear themselves once the condition ends.',
-            message_id=message_id,
-        )
-        return
-
-    _pending_resolve_alerts[_pending_key(chat_id, user_id)] = alerts
-    markup = InlineKeyboardMarkup(row_width=1)
-    for index, alert in enumerate(alerts):
-        markup.add(
-            InlineKeyboardButton(
-                alert_button_label(alert),
-                callback_data=f'am_resolve_pick:{index}',
-            )
-        )
-    markup.add(InlineKeyboardButton('⬅ Back', callback_data='nav_am_mw'))
-    _show_menu(
-        chat_id,
-        '✅ <b>Resolve Alert</b>\nPick the event alert to clear.',
-        markup,
-        message_id=message_id,
+    _show_alerts_menu(
+        call.message.chat.id,
+        call.from_user.id,
+        message_id=call.message.message_id,
+        notice=stop_alertmanager_mw(),
     )
 
 
-def _pop_pending_resolve_alert(chat_id, user_id, index_text, keep=False):
-    key = _pending_key(chat_id, user_id)
-    alerts = _pending_resolve_alerts.get(key)
-    try:
-        alert = alerts[int(index_text)]
-    except (TypeError, ValueError, IndexError):
-        _pending_resolve_alerts.pop(key, None)
-        return None
-    if not keep:
-        _pending_resolve_alerts.pop(key, None)
-    return alert
-
-
-def _handle_alertmanager_resolve(call):
+def _handle_alert_pick(call, index_text):
     if not _require_owner_callback(call):
         return
     bot.send_chat_action(call.message.chat.id, 'typing')
-    _start_resolve_flow(call.message.chat.id, call.from_user.id, message_id=call.message.message_id)
-
-
-def _handle_alertmanager_resolve_pick(call, index_text):
-    """Confirm before clearing, since a resolved alert cannot be brought back."""
-    if not _require_owner_callback(call):
-        return
-    from modules.alertmanager import alert_button_label
-
-    chat_id = call.message.chat.id
-    alert = _pop_pending_resolve_alert(chat_id, call.from_user.id, index_text, keep=True)
-    if alert is None:
-        _show_alertmanager_mw_result(
-            chat_id,
-            'That alert list expired. Open Resolve Alert again.',
-            message_id=call.message.message_id,
-        )
-        return
-
-    _show_menu(
-        chat_id,
-        '✅ <b>Resolve Alert</b>\n'
-        + escape(alert_button_label(alert, limit=120))
-        + '\n\nClearing only removes the alert from Alertmanager. '
-        'It does not fix the underlying event.',
-        _confirm_cancel_markup(f'am_resolve_do:{index_text}', confirm_label='Resolve'),
+    _show_alert_actions(
+        call.message.chat.id,
+        call.from_user.id,
+        index_text,
         message_id=call.message.message_id,
     )
 
 
-def _handle_alertmanager_resolve_confirm(call, index_text):
+def _handle_alert_incident(call, index_text):
+    """File an incident straight from the selected alert."""
     if not _require_owner_callback(call):
         return
-    from modules.alertmanager import alert_button_label, resolve_alert
-
     chat_id = call.message.chat.id
-    bot.send_chat_action(chat_id, 'typing')
-    alert = _pop_pending_resolve_alert(chat_id, call.from_user.id, index_text)
+    alert = _pending_alert(chat_id, call.from_user.id, index_text)
     if alert is None:
-        _show_alertmanager_mw_result(
-            chat_id,
-            'That alert list expired. Open Resolve Alert again.',
-            message_id=call.message.message_id,
-        )
-        return
-
-    label = alert_button_label(alert, limit=120)
-    if resolve_alert(alert):
-        text = f'Resolved: {label}'
-    else:
-        text = f'Unable to resolve: {label}'
-    _show_alertmanager_mw_result(chat_id, text, message_id=call.message.message_id)
-
-
-def _handle_incident_new(call):
-    if not _require_owner_callback(call):
-        return
-    _start_incident_flow(call.message.chat.id, call.from_user.id, message_id=call.message.message_id)
-
-
-def _handle_incident_alert_choice(call, index_text):
-    """Create an incident straight from a selected firing alert."""
-    if not _require_owner_callback(call):
-        return
-    chat_id = call.message.chat.id
-    alerts = _pending_incident_alerts.pop(_pending_key(chat_id, call.from_user.id), None)
-    try:
-        alert = alerts[int(index_text)]
-    except (TypeError, ValueError, IndexError):
         _show_incident_result(
             chat_id,
-            'That alert list expired. Run /incident again.',
+            'That alert list expired. Open Alerts again.',
             message_id=call.message.message_id,
         )
         return
@@ -989,13 +1057,136 @@ def _handle_incident_alert_choice(call, index_text):
     )
 
 
+def _handle_alert_silence(call, index_text):
+    if not _require_owner_callback(call):
+        return
+    _show_silence_picker(
+        call.message.chat.id,
+        call.from_user.id,
+        index_text,
+        message_id=call.message.message_id,
+    )
+
+
+def _handle_alert_silence_confirm(call, data_text):
+    """`<alert index>:<duration choice>` -- the alert picked, then how long for."""
+    if not _require_owner_callback(call):
+        return
+    from modules.alertmanager import alert_button_label, silence_alert
+
+    chat_id = call.message.chat.id
+    user_id = call.from_user.id
+    index_text, _, choice_text = data_text.partition(':')
+    try:
+        duration = cfg.ALERTMANAGER_ALERT_SILENCE_DURATIONS[int(choice_text)]
+    except (TypeError, ValueError, IndexError):
+        _show_alerts_menu(chat_id, user_id, message_id=call.message.message_id,
+                          notice='That silence duration is no longer offered.')
+        return
+
+    bot.send_chat_action(chat_id, 'typing')
+    alert = _pending_alert(chat_id, user_id, index_text)
+    if alert is None:
+        _show_alerts_menu(chat_id, user_id, message_id=call.message.message_id,
+                          notice='That alert list expired; this is the current one.')
+        return
+
+    label = alert_button_label(alert, limit=120)
+    if silence_alert(alert, duration):
+        notice = f'Silenced for {format_duration(duration)}: {label}'
+    else:
+        notice = f'Unable to silence: {label}'
+    _show_alerts_menu(chat_id, user_id, message_id=call.message.message_id, notice=notice)
+
+
+def _handle_alert_unsilence(call, index_text):
+    if not _require_owner_callback(call):
+        return
+    from modules.alertmanager import alert_button_label, unsilence_alert
+
+    chat_id = call.message.chat.id
+    bot.send_chat_action(chat_id, 'typing')
+    alert = _pending_alert(chat_id, call.from_user.id, index_text)
+    if alert is None:
+        _show_alerts_menu(chat_id, call.from_user.id, message_id=call.message.message_id,
+                          notice='That alert list expired; this is the current one.')
+        return
+
+    label = alert_button_label(alert, limit=120)
+    if unsilence_alert(alert):
+        notice = f'Unsilenced: {label}'
+    else:
+        # Either nothing of ours was silencing it, or expiring a silence failed. Both
+        # leave it audible or not on our say-so, so neither claims success.
+        notice = f'No silence of ours to lift on: {label}'
+    _show_alerts_menu(chat_id, call.from_user.id, message_id=call.message.message_id, notice=notice)
+
+
+def _handle_alert_resolve(call, index_text):
+    """Confirm before clearing, since a resolved alert cannot be brought back."""
+    if not _require_owner_callback(call):
+        return
+    from modules.alertmanager import alert_button_label
+
+    chat_id = call.message.chat.id
+    alert = _pending_alert(chat_id, call.from_user.id, index_text)
+    if alert is None:
+        _show_alerts_menu(chat_id, call.from_user.id, message_id=call.message.message_id,
+                          notice='That alert list expired; this is the current one.')
+        return
+
+    _show_menu(
+        chat_id,
+        '✅ <b>Resolve Alert</b>\n'
+        + escape(alert_button_label(alert, limit=120))
+        + '\n\nClearing only removes the alert from Alertmanager. '
+        'It does not fix the underlying event.',
+        _confirm_cancel_markup(
+            f'alert_resolve_do:{index_text}',
+            confirm_label='Resolve',
+            cancel_callback=f'alert_pick:{index_text}',
+            cancel_label='⬅ Back',
+        ),
+        message_id=call.message.message_id,
+    )
+
+
+def _handle_alert_resolve_confirm(call, index_text):
+    if not _require_owner_callback(call):
+        return
+    from modules.alertmanager import alert_button_label, resolve_alert
+
+    chat_id = call.message.chat.id
+    bot.send_chat_action(chat_id, 'typing')
+    alert = _pending_alert(chat_id, call.from_user.id, index_text)
+    if alert is None:
+        _show_alerts_menu(chat_id, call.from_user.id, message_id=call.message.message_id,
+                          notice='That alert list expired; this is the current one.')
+        return
+
+    label = alert_button_label(alert, limit=120)
+    notice = f'Resolved: {label}' if resolve_alert(alert) else f'Unable to resolve: {label}'
+    _show_alerts_menu(chat_id, call.from_user.id, message_id=call.message.message_id, notice=notice)
+
+
+def _handle_incident_new(call):
+    if not _require_owner_callback(call):
+        return
+    _show_incident_picker(call.message.chat.id, call.from_user.id, message_id=call.message.message_id)
+
+
 CALLBACK_HANDLERS = {
     'cancel': _handle_cancel,
     'menu_close': _handle_menu_close,
     'nav_home': _handle_nav_home,
     'nav_plex': _handle_nav_plex,
     'nav_media': _handle_nav_media,
-    'nav_am_mw': _handle_nav_alertmanager_mw,
+    'nav_alerts': _handle_nav_alerts,
+    # Retired home-menu buttons. Telegram keeps old menu messages in the chat forever, and
+    # a tap on one would otherwise do nothing at all; both land in the section that
+    # replaced them.
+    'nav_am_mw': _handle_nav_alerts,
+    'incident_new': _handle_incident_new,
     'plex_allow': _handle_plex_allow,
     'cmd_ip': _handle_plex_allow,
     'plex_allow_manual': _handle_plex_allow_manual,
@@ -1006,10 +1197,48 @@ CALLBACK_HANDLERS = {
     'cmd_redownload': _handle_media_redownload,
     'am_mw_start': _handle_alertmanager_mw_start,
     'am_mw_stop': _handle_alertmanager_mw_stop,
-    'am_mw_status': _handle_alertmanager_mw_status,
-    'am_resolve': _handle_alertmanager_resolve,
-    'incident_new': _handle_incident_new,
 }
+
+# Actions on a specific alert, carrying its index into the list drawn for that user.
+# Membership here is what makes a callback owner-only -- see `_is_owner_only_callback` --
+# so every entry must be an alert action and nothing else belongs in this map.
+ALERT_CALLBACK_HANDLERS = {
+    'alert_pick:': _handle_alert_pick,
+    'alert_incident:': _handle_alert_incident,
+    'alert_silence:': _handle_alert_silence,
+    'alert_silence_do:': _handle_alert_silence_confirm,
+    'alert_unsilence:': _handle_alert_unsilence,
+    'alert_resolve:': _handle_alert_resolve,
+    'alert_resolve_do:': _handle_alert_resolve_confirm,
+}
+
+# Every fixed-name owner-only callback. The monitoring surface is the bulk of it -- the
+# Alerts section, the blanket maintenance window, incident filing -- plus revoking Plex
+# access, which is owner-only for the same reason: it changes state for other people.
+# Per-alert actions are not repeated here; ALERT_CALLBACK_HANDLERS above is owner-only
+# in its entirety.
+OWNER_ONLY_CALLBACKS = frozenset({
+    'nav_alerts',
+    'nav_am_mw',
+    'incident_new',
+    'am_mw_start',
+    'am_mw_stop',
+    'plex_reset',
+})
+
+
+def _is_owner_only_callback(data):
+    """True for callbacks only the owner may run, monitoring above all.
+
+    Registration is what gates a callback, not a line inside its handler. An Alertmanager
+    silence or resolution changes what the homelab will tell anyone about itself, and
+    filing an incident writes to a private repo and triggers a triage run against real
+    hosts. A new alert action must not be able to reach any of that by forgetting
+    `_require_owner_callback`.
+    """
+    return data in OWNER_ONLY_CALLBACKS or any(
+        data.startswith(prefix) for prefix in ALERT_CALLBACK_HANDLERS
+    )
 
 
 @bot.callback_query_handler(func=lambda call: True)
@@ -1018,24 +1247,23 @@ def handle_callback(call):
     chat_id = call.message.chat.id
     user_id = call.from_user.id
 
+    # Checked before dispatch, so a non-owner never reaches a monitoring handler at all.
+    # The handlers still check for themselves -- they are also called directly -- but this
+    # is the check that cannot be omitted by writing a new one.
+    if _is_owner_only_callback(data) and not is_owner_chat_id(user_id):
+        bot.answer_callback_query(call.id)
+        _answer_not_allowed(chat_id)
+        return
+
     handler = CALLBACK_HANDLERS.get(data)
     if handler is not None:
         handler(call)
         return
 
-    # Incident: owner picked one of the firing alerts
-    if data.startswith('incident_alert:'):
-        _handle_incident_alert_choice(call, data.split(':', 1)[1])
-        return
-
-    # Resolve: owner picked a one-shot alert, then confirmed clearing it
-    if data.startswith('am_resolve_pick:'):
-        _handle_alertmanager_resolve_pick(call, data.split(':', 1)[1])
-        return
-
-    if data.startswith('am_resolve_do:'):
-        _handle_alertmanager_resolve_confirm(call, data.split(':', 1)[1])
-        return
+    for prefix, indexed_handler in ALERT_CALLBACK_HANDLERS.items():
+        if data.startswith(prefix):
+            indexed_handler(call, data.split(':', 1)[1])
+            return
 
     # Redownload: user picked an issue from the list
     if data.startswith('redownload_issue:'):

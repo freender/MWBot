@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 from datetime import datetime, timezone
 
 import requests
@@ -22,6 +24,9 @@ TRIAGE_TRIGGER_COMMENT = (
 # existed.  See AGENTS.md "Incident Pipeline Contract".
 FINGERPRINT_MARKER = '<!-- alert-fingerprint: {} -->'
 _FINGERPRINT_PATTERN = re.compile(r'^[0-9a-f]{8,64}$')
+# Reads the marker back out of an issue body. Anchored to the same shape the writer is
+# allowed to emit, so a body cannot introduce a fingerprint the writer would have rejected.
+_FINGERPRINT_MARKER_PATTERN = re.compile(r'<!-- alert-fingerprint: ([0-9a-f]{8,64}) -->')
 
 # Open incidents scanned when looking for an existing issue for the same alert.  One page is
 # enough by a wide margin -- an incident backlog past this is a bigger problem than a
@@ -81,21 +86,26 @@ def _github_headers():
     }
 
 
-def find_open_incident(fingerprint):
-    """The open incident already filed for this alert, or None.
+# The alerts menu annotates every listed alert with the incident already filed for it, so
+# one render answers "is this known?" for the whole list. That is one listing, not one per
+# alert, but it is still a GitHub call on every render of a menu with a Refresh button and a
+# Back that returns to it. This cache absorbs that burst.
+#
+# It is opt-in, and dedup does not opt in: `find_open_incident` gates whether a duplicate
+# issue gets filed, and a cache entry from thirty seconds ago is exactly the stale "no
+# results" the unindexed listing below exists to avoid.
+INCIDENT_INDEX_TTL_SECONDS = 30
+_INCIDENT_INDEX_LOCK = threading.Lock()
+_incident_index_cache = {'index': {}, 'at': None}
+
+
+def _fetch_open_incidents():
+    """Open incident issues, or None if GitHub could not be asked.
 
     Deliberately not the GitHub search API: its index lags by tens of seconds, which is
-    exactly the window a repeated file lands in, and a stale "no results" here files the
-    duplicate this exists to prevent.  Listing open issues is unindexed and authoritative.
-
-    Only open incidents count.  An alert that fires again after its incident was closed is
-    a new incident, not a duplicate of the one that was supposed to have fixed it.
+    exactly the window a repeated file lands in, and a stale "no results" there files the
+    duplicate dedup exists to prevent.  Listing open issues is unindexed and authoritative.
     """
-    fingerprint = clean_fingerprint(fingerprint)
-    if not fingerprint:
-        return None
-
-    marker = FINGERPRINT_MARKER.format(fingerprint)
     try:
         response = requests.get(
             f'{GITHUB_API_URL}/repos/{cfg.GITHUB_INCIDENT_REPO}/issues',
@@ -110,20 +120,72 @@ def find_open_incident(fingerprint):
         # Unreachable GitHub is reported by the create call that follows; failing open here
         # risks a duplicate issue, while failing closed would drop a real incident.
         return None
+    return issues if isinstance(issues, list) else None
 
-    if not isinstance(issues, list):
-        return None
+
+def invalidate_incident_index():
+    with _INCIDENT_INDEX_LOCK:
+        _incident_index_cache['at'] = None
+
+
+def get_open_incident_index(use_cache=False):
+    """Alert fingerprint -> the open incident filed for it, for every open incident.
+
+    Returns {} when GitHub cannot be reached, which costs the alert list its incident
+    annotations and nothing else.  Only successful fetches are cached, so a blip does not
+    make the whole list look unfiled for the next thirty seconds.
+    """
+    if not incident_creation_is_configured():
+        return {}
+
+    if use_cache:
+        with _INCIDENT_INDEX_LOCK:
+            cached_at = _incident_index_cache['at']
+            if cached_at is not None and time.monotonic() - cached_at < INCIDENT_INDEX_TTL_SECONDS:
+                return dict(_incident_index_cache['index'])
+
+    issues = _fetch_open_incidents()
+    if issues is None:
+        return {}
+
+    index = {}
     for issue in issues:
         if not isinstance(issue, dict) or issue.get('pull_request'):
             continue
-        if marker in (issue.get('body') or ''):
-            return {
-                'number': issue.get('number'),
-                'title': issue.get('title') or '',
-                'url': issue.get('html_url') or '',
-                'duplicate': True,
-            }
-    return None
+        match = _FINGERPRINT_MARKER_PATTERN.search(issue.get('body') or '')
+        if not match:
+            continue
+        # setdefault, not assignment: if one alert somehow ended up with two open
+        # incidents, the first match in listing order is the one dedup used to return, and
+        # a reader following the link should land on the same issue dedup would.
+        index.setdefault(match.group(1), {
+            'number': issue.get('number'),
+            'title': issue.get('title') or '',
+            'url': issue.get('html_url') or '',
+        })
+
+    with _INCIDENT_INDEX_LOCK:
+        _incident_index_cache['index'] = index
+        _incident_index_cache['at'] = time.monotonic()
+    return index
+
+
+def find_open_incident(fingerprint):
+    """The open incident already filed for this alert, or None.
+
+    Only open incidents count.  An alert that fires again after its incident was closed is
+    a new incident, not a duplicate of the one that was supposed to have fixed it.
+
+    Uncached on purpose -- see `INCIDENT_INDEX_TTL_SECONDS`.
+    """
+    fingerprint = clean_fingerprint(fingerprint)
+    if not fingerprint:
+        return None
+
+    incident = get_open_incident_index().get(fingerprint)
+    if not incident:
+        return None
+    return {**incident, 'duplicate': True}
 
 
 def request_triage(issue_number):
@@ -308,6 +370,9 @@ def create_incident(summary, fingerprint=None):
         'title': payload.get('title') or build_incident_title(summary),
         'url': payload['html_url'],
     }
+    # So the alerts menu shows the new "→ #N" immediately instead of after the cache
+    # expires -- the list is what the owner returns to right after filing.
+    invalidate_incident_index()
     triage_error = request_triage(incident['number'])
     if triage_error:
         incident['warning'] = triage_error

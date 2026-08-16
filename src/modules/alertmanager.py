@@ -1,5 +1,5 @@
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 import cfg
 from modules.common import normalize_base_url, request_json
@@ -7,6 +7,10 @@ from modules.common import normalize_base_url, request_json
 
 _SILENCE_COMMENT = 'mwbot-maintenance'
 _SILENCE_CREATED_BY = 'mwbot'
+# Marks a silence created for one specific alert rather than the blanket maintenance
+# window.  It is how Unsilence tells a silence it may expire apart from one it may not:
+# see `alert_silence_ids`.
+ALERT_SILENCE_COMMENT = 'mwbot-alert-silence'
 _ALERT_STATUS_LIMIT = 10
 _SEVERITY_ORDER = {'critical': 0, 'warning': 1, 'info': 2}
 
@@ -120,19 +124,130 @@ def is_resolvable(alert):
     return bool(source) and source in cfg.ALERTMANAGER_RESOLVABLE_SOURCES
 
 
-def get_resolvable_alert_choices(limit=_ALERT_STATUS_LIMIT):
-    """Active one-shot alerts, sorted for manual resolution.
+def get_alert_choices(limit=_ALERT_STATUS_LIMIT):
+    """Active alerts, sorted for display as an inline keyboard.
 
-    Returns None when Alertmanager is unreachable so callers can tell "nothing to
-    resolve" apart from "we could not ask".
+    One list for the whole alerts section.  Filing, resolving and silencing used to
+    each fetch their own, which meant the same alert could be offered by one picker
+    and missing from another.  Per-action eligibility is decided per alert at render
+    time (`is_resolvable`, `alert_silence_ids`), not by filtering the list.
+
+    Returns None when Alertmanager is unreachable, so callers can tell "nothing is
+    firing" apart from "we could not ask".
     """
     if not cfg.ALERTMANAGER_URL:
         return None
     alerts = get_active_alerts()
     if alerts is None:
         return None
-    resolvable = [alert for alert in alerts if is_resolvable(alert)]
-    return sorted(resolvable, key=_alert_sort_key)[:limit]
+    return sorted(alerts, key=_alert_sort_key)[:limit]
+
+
+def alert_silence_matchers(alert):
+    """Exact matchers for one alert's label set.
+
+    Every label is matched exactly, so the silence covers this alert and nothing
+    adjacent to it.  If a label changes the silence stops applying -- correctly, since
+    a different label set is a different alert with a different fingerprint.
+    """
+    labels = (alert or {}).get('labels') or {}
+    return [
+        {'name': name, 'value': value, 'isRegex': False, 'isEqual': True}
+        for name, value in sorted(labels.items())
+    ]
+
+
+def silence_alert(alert, duration):
+    """Silence a single alert.  Returns the silence ID or None on failure."""
+    matchers = alert_silence_matchers(alert)
+    if not matchers:
+        logging.error('Refusing to silence an alert with no labels')
+        return None
+    return create_silence(duration, matchers=matchers, comment=ALERT_SILENCE_COMMENT)
+
+
+def get_silences():
+    """Every silence Alertmanager knows about.  [] on failure."""
+    try:
+        result = request_json('GET', f'{_base_url()}/api/v2/silences', timeout=10)
+        return result if isinstance(result, list) else []
+    except Exception as exc:
+        logging.error('Failed to fetch Alertmanager silences: %s', exc)
+        return []
+
+
+def silence_index():
+    """All silences keyed by ID.
+
+    One call resolves `silencedBy` for a whole alert list.  Rendering the list used to
+    cost a GET per silenced alert, which grew with exactly the thing the list is for.
+    """
+    return {
+        silence.get('id'): silence
+        for silence in get_silences()
+        if isinstance(silence, dict) and silence.get('id')
+    }
+
+
+def alert_silences(alert, index=None):
+    """Our own silences suppressing this alert, as `(id, silence)` pairs.
+
+    Deliberately not everything in `silencedBy`: the blanket maintenance window also
+    suppresses this alert, and an Unsilence button on one alert must not be able to
+    lift the window over all of them.  Only silences we created for this alert -- by
+    comment -- are eligible.
+
+    `index` is a `silence_index()` result; pass it when rendering more than one alert.
+    """
+    silenced_by = ((alert or {}).get('status') or {}).get('silencedBy') or []
+    found = []
+    for silence_id in silenced_by:
+        silence = index.get(silence_id) if index is not None else get_silence(silence_id)
+        if (silence or {}).get('comment') == ALERT_SILENCE_COMMENT:
+            found.append((silence_id, silence))
+    return found
+
+
+def alert_silence_ids(alert, index=None):
+    return [silence_id for silence_id, _ in alert_silences(alert, index=index)]
+
+
+def _parse_api_time(value):
+    """Parse an Alertmanager timestamp.  None if it is missing or unparseable."""
+    text = str(value or '').strip()
+    if not text:
+        return None
+    if text.endswith('Z'):
+        text = text[:-1] + '+00:00'
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+def alert_silenced_until(alert, index=None):
+    """When our silence on this alert lapses, or None if we are not silencing it.
+
+    The latest of ours, so overlapping silences report the moment it actually goes
+    audible again rather than the first one to expire.
+    """
+    ends = [
+        parsed
+        for _, silence in alert_silences(alert, index=index)
+        if (parsed := _parse_api_time((silence or {}).get('endsAt')))
+    ]
+    return max(ends) if ends else None
+
+
+def unsilence_alert(alert):
+    """Expire this alert's own silences.  False when there were none, or one failed."""
+    silence_ids = alert_silence_ids(alert)
+    if not silence_ids:
+        return False
+    # Materialised so a first failure does not skip the remaining silences.
+    results = [expire_silence(silence_id) for silence_id in silence_ids]
+    return all(results)
 
 
 def resolve_alert(alert):
@@ -222,12 +337,7 @@ def build_alert_incident_text(alert):
     started = (alert.get('startsAt') or '').strip()
     if started:
         details.append(f'- firing since: {started}')
-    status = alert.get('status') or {}
-    markers = []
-    if status.get('silencedBy'):
-        markers.append('silenced')
-    if status.get('inhibitedBy'):
-        markers.append('inhibited')
+    markers = suppression_markers(alert)
     if markers:
         details.append(f'- suppressed: {", ".join(markers)}')
     if details:
@@ -249,20 +359,6 @@ def alert_fingerprint(alert):
     return str((alert or {}).get('fingerprint') or '').strip()
 
 
-def get_incident_alert_choices(limit=_ALERT_STATUS_LIMIT):
-    """Active alerts sorted for incident selection.
-
-    Returns None when Alertmanager is unreachable, so callers can distinguish
-    "nothing is firing" from "we could not ask".
-    """
-    if not cfg.ALERTMANAGER_URL:
-        return None
-    alerts = get_active_alerts()
-    if alerts is None:
-        return None
-    return sorted(alerts, key=_alert_sort_key)[:limit]
-
-
 def _alert_sort_key(alert):
     labels = alert.get('labels') or {}
     severity = labels.get('severity', '').lower()
@@ -273,56 +369,29 @@ def _alert_sort_key(alert):
     )
 
 
-def format_alert_status(alerts, limit=_ALERT_STATUS_LIMIT):
-    if alerts is None:
-        return 'DOWN: Alertmanager API unavailable.\nAlerts could not be loaded.'
-    if not alerts:
-        return (
-            'UP: Alertmanager API\n'
-            'DOWN: None\n'
-            'All monitored alert conditions are clear.'
-        )
-
-    sorted_alerts = sorted(alerts, key=_alert_sort_key)
-    suppressed_count = sum(
-        bool((alert.get('status') or {}).get('silencedBy') or
-             (alert.get('status') or {}).get('inhibitedBy'))
-        for alert in sorted_alerts
-    )
-    summary = f'DOWN: {len(sorted_alerts)} active alert'
-    if len(sorted_alerts) != 1:
-        summary += 's'
-    if suppressed_count:
-        summary += f' ({suppressed_count} suppressed)'
-
-    lines = ['UP: Alertmanager API', summary]
-    for alert in sorted_alerts[:limit]:
-        labels = alert.get('labels') or {}
-        severity = labels.get('severity', 'unknown').upper()
-        alert_name = labels.get('alertname', 'UnknownAlert')
-        status = alert.get('status') or {}
-        markers = []
-        if status.get('silencedBy'):
-            markers.append('silenced')
-        if status.get('inhibitedBy'):
-            markers.append('inhibited')
-        suffix = f" [{', '.join(markers)}]" if markers else ''
-        lines.append(f'- {severity} {_alert_target(labels)}: {alert_name}{suffix}')
-
-    remaining = len(sorted_alerts) - limit
-    if remaining > 0:
-        lines.append(f'- ...and {remaining} more')
-    return '\n'.join(lines)
+def suppression_markers(alert):
+    """Why this alert is not notifying, if it is not: 'silenced', 'inhibited'."""
+    status = (alert or {}).get('status') or {}
+    markers = []
+    if status.get('silencedBy'):
+        markers.append('silenced')
+    if status.get('inhibitedBy'):
+        markers.append('inhibited')
+    return markers
 
 
-def get_alertmanager_alert_status_text():
-    return format_alert_status(get_active_alerts())
+def format_alert_summary(alerts):
+    """One line above the alert list.
 
-
-def extend_silence(silence_id, new_duration, matchers=None, comment=None):
-    """Expire the existing silence and create a new one with a fresh duration.
-
-    Returns the new silence ID or None on failure.
+    The list itself carries the per-alert detail that a text status used to spell out,
+    so this only has to say how much there is and how much of it is muted.
     """
-    expire_silence(silence_id)
-    return create_silence(new_duration, matchers=matchers, comment=comment)
+    if alerts is None:
+        return 'Alertmanager is unavailable; alerts could not be loaded.'
+    if not alerts:
+        return 'All clear. Nothing is firing.'
+    suppressed = sum(1 for alert in alerts if suppression_markers(alert))
+    text = f'{len(alerts)} active alert' + ('' if len(alerts) == 1 else 's')
+    if suppressed:
+        text += f' · {suppressed} suppressed'
+    return text

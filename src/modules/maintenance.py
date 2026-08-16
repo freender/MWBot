@@ -1,9 +1,8 @@
 import json
 import logging
 import os
-import re
 import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import cfg
@@ -13,36 +12,35 @@ ALERTMANAGER_STATE_FILE = '/config/alertmanager_mw_state.json'
 STATE_LOCK = threading.Lock()
 ALERTMANAGER_ACTION_LOCK = threading.RLock()
 
-def parse_duration(text):
-    if not text:
-        return None, None
-
-    value = text.strip().lower()
-    match = re.fullmatch(r'(\d+)([mh])', value)
-    if not match:
-        return None, 'Invalid duration. Use formats like 30m or 2h.'
-
-    amount = int(match.group(1))
-    unit = match.group(2)
-    if amount <= 0:
-        return None, 'Duration must be greater than zero.'
-
-    if unit == 'm':
-        return timedelta(minutes=amount), None
-    return timedelta(hours=amount), None
-
-
 def format_duration(delta):
+    """Exact duration, e.g. '7d', '4h 12m'. Used for configured values and button labels."""
     total_seconds = max(int(delta.total_seconds()), 0)
-    hours, remainder = divmod(total_seconds, 3600)
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
     minutes, _ = divmod(remainder, 60)
 
     parts = []
+    if days:
+        parts.append(f'{days}d')
     if hours:
         parts.append(f'{hours}h')
     if minutes or not parts:
         parts.append(f'{minutes}m')
     return ' '.join(parts)
+
+
+def format_remaining(delta):
+    """Coarsest useful unit for a countdown, e.g. '6d', '5h', '12m'.
+
+    A silence row reading '6d 23h 41m left' is worse than '6d left': the point of the
+    countdown is whether it lapses today or next week, not the seconds.
+    """
+    total_seconds = max(int(delta.total_seconds()), 0)
+    if total_seconds >= 86400:
+        return f'{total_seconds // 86400}d'
+    if total_seconds >= 3600:
+        return f'{total_seconds // 3600}h'
+    return f'{max(total_seconds // 60, 1)}m'
 
 
 def _ensure_state_dir():
@@ -97,7 +95,7 @@ def _start_alertmanager_mw(duration=None):
         silence = get_silence(existing_state.get('silence_id'))
         silence_state = (silence or {}).get('status', {}).get('state')
         if silence_state in ('active', 'pending'):
-            return get_alertmanager_mw_status_text(existing_state)
+            return 'Alertmanager maintenance is already active.'
         if silence_state != 'expired':
             return 'Unable to verify the existing Alertmanager maintenance window.'
 
@@ -149,46 +147,45 @@ def _stop_alertmanager_mw():
     return 'Alertmanager maintenance completed.'
 
 
-def get_alertmanager_mw_status_text(state=None):
+def get_alertmanager_window_text(state=None):
+    """One line describing the maintenance window, or '' when none is active.
+
+    Empty means inactive.  The alerts menu keys its Start/End Maintenance button off
+    that emptiness rather than reading the state file itself, because deciding it here
+    is what lets this clear state whose silence has already expired -- otherwise a
+    stale file would offer End Maintenance for a window that ended hours ago.
+    """
     with ALERTMANAGER_ACTION_LOCK:
-        from modules.alertmanager import get_alertmanager_alert_status_text
-
-        alert_status = get_alertmanager_alert_status_text()
-        maintenance_status = _get_alertmanager_mw_status_text(state)
-        return f'{alert_status}\n\n{maintenance_status}'
+        return _get_alertmanager_window_text(state)
 
 
-def _get_alertmanager_mw_status_text(state=None):
+def _get_alertmanager_window_text(state=None):
     active_state = state or load_alertmanager_mw_state()
-    if not active_state:
-        return 'No Alertmanager maintenance window is active.'
-    if not cfg.ALERTMANAGER_URL:
-        return 'Alertmanager maintenance is not configured.'
+    if not active_state or not cfg.ALERTMANAGER_URL:
+        return ''
 
     expires_at = datetime.fromisoformat(active_state['expires_at'])
     remaining = expires_at - datetime.now(ZoneInfo(cfg.TZ))
     if remaining.total_seconds() <= 0:
-        if not clear_alertmanager_mw_state():
-            return 'Alertmanager maintenance expired, but local state cleanup failed.'
-        return 'No Alertmanager maintenance window is active.'
+        clear_alertmanager_mw_state()
+        return ''
 
     from modules.alertmanager import get_silence
 
     silence = get_silence(active_state.get('silence_id'))
     if not silence:
+        # Reported as active, not cleared: the silence may well be in place and dropping
+        # it here would leave Alertmanager muted with no button left to unmute it.
         return (
-            'Unable to verify the Alertmanager maintenance window.\n'
-            f"Local safety expiry: {expires_at.strftime('%Y-%m-%d %H:%M %Z')}"
+            '🔕 Maintenance active (unverified) — safety expiry '
+            f"{expires_at.strftime('%Y-%m-%d %H:%M %Z')}"
         )
 
-    silence_state = silence.get('status', {}).get('state')
-    if silence_state == 'expired':
-        if not clear_alertmanager_mw_state():
-            return 'Alertmanager maintenance expired, but local state cleanup failed.'
-        return 'No Alertmanager maintenance window is active.'
+    if silence.get('status', {}).get('state') == 'expired':
+        clear_alertmanager_mw_state()
+        return ''
 
     return (
-        'Alertmanager maintenance is active.\n'
-        f"Safety expiry: {expires_at.strftime('%Y-%m-%d %H:%M %Z')}\n"
-        f'Remaining: {format_duration(remaining)}'
+        f'🔕 Maintenance active — {format_duration(remaining)} left '
+        f"(expires {expires_at.strftime('%H:%M %Z')})"
     )

@@ -5,7 +5,42 @@
 - Tests: `python -m unittest tests.test_modules tests.test_main`
 - Prefer explicit error handling and focused unit tests for helper flows
 - Keep user-facing Telegram replies short and actionable
-- Maintenance flow: use `/start` as the menu-only entry point; the owner-only Alertmanager MW menu owns its silence and persisted state
+- Alerts flow: use `/start` as the menu-only entry point; the owner-only Alerts section is one menu over one noun (a firing alert), where the live list *is* the menu and file/resolve/silence are actions on the alert you picked. Maintenance windows and incident filing were separate top-level menus and are not to be split apart again — they rendered the same alert list three ways and let you see an alert in one place while only acting on it in another
+- Alert eligibility is decided per alert at render time (`is_resolvable`, `alert_silence_ids`), never by filtering the list: one `get_alert_choices()` feeds the whole section, so an alert offered by one action cannot be missing from another
+- Per-alert silences match the alert's exact label set and carry `ALERT_SILENCE_COMMENT`. That comment is load-bearing: it is how Unsilence expires a silence we made for one alert without lifting the blanket maintenance window suppressing all of them
+- Silence duration is asked, not assumed (`ALERTMANAGER_ALERT_SILENCE_DURATIONS`, default `1d,3d,7d`). One day is a floor, not a default to shrink: a sub-day silence does not survive a nightly re-alert, so it defers tomorrow's interruption instead of stopping it. One week is a ceiling because **nothing re-notifies when a silence lapses**
+- A silenced alert keeps its row in the list, marked `🔇 <time left>`. Silencing is the one action that removes an alert from your attention, and for a multi-day silence that visibility is the only thing bringing it back. Do not "tidy" silenced alerts out of the list
+- Resolve exists for a one-shot event with no live condition; Silence exists for a live condition already tracked by an incident. Do not merge them: resolving a metric alert would only have vmalert re-send it
+- `cfg._parse_duration` accepts `m`/`h`/`d`. `cfg` is evaluated at import, so a bad duration in the runtime `.env` raises and **crash-loops the container** rather than falling back — that is deliberate (a silently wrong silence length is worse), but it means duration config changes need a canary, not a blind restart
+- `get_alertmanager_window_text()` returning `''` means "no window active" and is what the Start/End Maintenance button keys off. It also clears state whose silence has already expired, so read it before building the keyboard
+
+## Monitoring Is Owner-Only, By Registration
+
+The whole alerts surface — the list, every per-alert action, the maintenance window, incident
+filing — is owner-only, and `handle_callback` enforces it **before dispatch**:
+
+- `ALERT_CALLBACK_HANDLERS` is owner-only in its entirety. Only alert actions belong in it;
+  putting anything else there silently makes that thing owner-only.
+- `OWNER_ONLY_CALLBACKS` holds the fixed-name owner callbacks. A new monitoring callback goes
+  in one of those two places, and that registration is what gates it.
+- Handlers keep their own `_require_owner_callback` because they are also called directly.
+  That is defence in depth, not the primary gate — never the only one.
+
+Why it is registration rather than a line in each handler: an Alertmanager silence or
+resolution changes what the homelab will tell **anyone** about itself, and filing an incident
+writes to a private repo and triggers a triage run against real hosts. "Remember to add the
+check" is not an access control.
+
+`tests/test_main.py::OwnerOnlySurfaceTest` enforces this and is derived from the dispatch maps,
+so a newly registered action is covered the moment it exists. Its load-bearing test is
+`test_no_callback_at_all_reaches_monitoring_for_a_non_owner`: it stubs only the network
+boundary and the non-monitoring flows, runs every registered callback as a non-owner, and
+asserts nothing reached `modules.alertmanager` or the incident repo. It asks whether monitoring
+was reached, not whether a declaration was written, so a monitoring callback added with no gate
+*and* no declaration still fails. Do not "simplify" it by stubbing the monitoring path.
+
+Identity is Seerr-derived (`is_owner_chat_id`, Seerr user `id=1`). An unreachable Seerr empties
+the owner set, which must keep failing closed: no owner means the section is shut, never open.
 - Redownload flow: open it from the Media menu; ask for a Seerr issue, movie, or series URL; resolve it via Seerr API; if a media URL is sent, use the latest matching Seerr issue; confirm with the user; then blacklist via queue removal first and history fallback second
 - Arr routing: standard items use `SONARR_*` / `RADARR_*`; 4K items use `SONARR4K_*` / `RADARR4K_*` when Seerr points at a 4K service
 - Deployment note: MWBot needs network reachability to `seerr`, `sonarr`, `sonarr4k`, `radarr`, and `radarr4k`; on helm this is done by attaching the container to `net_overlay`
@@ -39,9 +74,17 @@ boundary:
   would post the comment successfully and triage would silently never run.
 - **Alert fingerprint marker.** `build_incident_body` appends
   `<!-- alert-fingerprint: <fp> -->`. It is how we refuse to file the same firing alert
-  twice, and the consuming repo reads it to tell whether the alert an incident came from has
-  stopped firing. It is appended after the alert text is truncated so a long alert cannot
-  push it out of the body; keep it that way.
+  twice, how the alerts list draws `→ #N` on an alert that is already filed, and how the
+  consuming repo tells whether the alert an incident came from has stopped firing. It is
+  appended after the alert text is truncated so a long alert cannot push it out of the body;
+  keep it that way. `get_open_incident_index` reads it back, validating the same shape the
+  writer is allowed to emit.
+- **Incident index caching.** `get_open_incident_index(use_cache=True)` exists for menu
+  renders, which happen in bursts (list → action sheet → Back → list, plus Refresh). Dedup
+  must never opt in: `find_open_incident` gates whether a duplicate issue gets filed, and a
+  cached "not filed" from thirty seconds ago is exactly the stale answer the unindexed
+  listing exists to avoid. `create_incident` invalidates the cache after filing so the list
+  you return to shows the new number.
 - **Triage report heading.** `find_triage_reports` matches a `## Verdict` heading from
   `github-actions[bot]` in the consuming repo. It is read-only and only notifies: asking for
   the fix stays a GitHub action taken by the owner, because that comment authorises a deploy
@@ -77,9 +120,9 @@ with `ModuleNotFoundError: No module named 'telebot'` rather than reporting a re
 ```bash
 source .venv/bin/activate
 python3 -m py_compile src/main.py src/cfg.py src/modules/__init__.py \
-  src/modules/common.py src/modules/firewall.py src/modules/maintenance.py \
-  src/modules/incidents.py src/modules/network_check.py src/modules/redownload.py \
-  tests/test_main.py tests/test_modules.py
+  src/modules/alertmanager.py src/modules/common.py src/modules/firewall.py \
+  src/modules/maintenance.py src/modules/incidents.py src/modules/network_check.py \
+  src/modules/redownload.py tests/test_main.py tests/test_modules.py
 python3 -m unittest tests.test_modules tests.test_main
 git diff --check
 ```

@@ -1,10 +1,12 @@
 # MWBot
 
-MWBot is a Telegram bot for Alertmanager maintenance windows and media/Plex access controls. It uses a menu-first Telegram flow, with `/start` opening the inline button menu for all supported actions.
+MWBot is a Telegram bot for Alertmanager alert handling and media/Plex access controls. It uses a menu-first Telegram flow, with `/start` opening the inline button menu for all supported actions.
 
 ## Features
 
-- Start and stop Alertmanager maintenance silences, with API health and active-alert status.
+- An owner-only Alerts section where the live Alertmanager alert list *is* the menu: pick an alert to file it as an incident, resolve it, or silence it.
+- Per-alert silences that match only that alert's label set, alongside a blanket maintenance window for the whole homelab.
+- Alerts already filed are marked `→ #N` on the list, so a known fault is visible before you tap anything.
 - Manage ISP ASN access through Cloudflare WAF.
 - Detect a user's Cloudflare-observed ASN through a short-lived Worker session.
 - Authenticate users from Seerr Telegram notification settings.
@@ -27,7 +29,8 @@ services:
       - CHAT_ID=${TELEGRAM_CHATID} # Default Telegram chat ID for notifications
       - ALERTMANAGER_URL=${ALERTMANAGER_URL} # Optional Alertmanager API base URL
       - ALERTMANAGER_MW_MATCHERS=${ALERTMANAGER_MW_MATCHERS} # Optional silence matcher JSON
-      - ALERTMANAGER_OPEN_MW_DURATION=${ALERTMANAGER_OPEN_MW_DURATION} # Optional safety expiry; defaults to 12h
+      - ALERTMANAGER_OPEN_MW_DURATION=${ALERTMANAGER_OPEN_MW_DURATION} # Optional maintenance safety expiry; defaults to 12h
+      - ALERTMANAGER_ALERT_SILENCE_DURATIONS=${ALERTMANAGER_ALERT_SILENCE_DURATIONS} # Optional per-alert silence choices; defaults to 1d,3d,7d
       - GITHUB_INCIDENT_REPO=${GITHUB_INCIDENT_REPO} # Private incident repository
       - GITHUB_INCIDENT_TOKEN=${GITHUB_INCIDENT_TOKEN} # Fine-grained token with Issues write access
       - WAF_TOKEN=${WAF_TOKEN} # Cloudflare WAF API token
@@ -55,9 +58,10 @@ services:
 
 - `TOKEN`: Your Telegram bot token.
 - `CHAT_ID`: The default Telegram chat ID to receive notifications.
-- `ALERTMANAGER_URL`: Optional Alertmanager API base URL used by the separate Alertmanager maintenance menu.
-- `ALERTMANAGER_MW_MATCHERS`: Optional JSON array of Alertmanager silence matchers. Defaults to all alerts.
-- `ALERTMANAGER_OPEN_MW_DURATION`: Alertmanager maintenance safety expiry. Defaults to `12h`.
+- `ALERTMANAGER_URL`: Optional Alertmanager API base URL used by the Alerts section.
+- `ALERTMANAGER_MW_MATCHERS`: Optional JSON array of matchers for the blanket maintenance window. Defaults to all alerts. Per-alert silences do not use this; they match the selected alert's own label set.
+- `ALERTMANAGER_OPEN_MW_DURATION`: Maintenance window safety expiry. Defaults to `12h`.
+- `ALERTMANAGER_ALERT_SILENCE_DURATIONS`: Comma-separated durations offered when silencing one alert, in button order. Defaults to `1d,3d,7d`. Durations use `m`, `h` or `d`.
 - `GITHUB_INCIDENT_REPO`: Private GitHub repository used for incidents. Defaults to `freender/homelab-ops`.
 - `GITHUB_INCIDENT_TOKEN`: Fine-grained token limited to that repository with Issues read/write access.
 - `WAF_TOKEN`: The API token for Cloudflare WAF.
@@ -83,11 +87,15 @@ services:
 ## Usage
 
 1. **Open the Bot**: Use `/start` to open the main menu.
-2. **Manage Maintenance Windows**:
-    - Use Alertmanager MW to start, stop, or inspect an Alertmanager silence.
+2. **Alerts**: Owner-only. Opens the live Alertmanager alert list, summarised above it and annotated with the open incident already filed for each alert. Pick an alert for its action sheet:
+    - **File Incident** — see Incidents below. Replaced by **Open Incident #N** when one already exists.
+    - **Resolve** — offered only for one-shot event alerts (by default `source=pve`). A metric alert clears itself once the condition ends, and would be re-sent by vmalert within one evaluation interval. Confirmation is required, because a resolved alert cannot be brought back.
+    - **Silence / Unsilence** — mutes just that alert by matching its exact label set, after asking for how long (`1d` / `3d` / `7d` by default). Unsilence lifts only silences MWBot created for that alert, never the blanket maintenance window. A silenced alert stays in the list marked `🔇 6d`, so a long silence is visible rather than forgotten.
+
+   The list footer starts or ends the blanket maintenance window; only the one that applies to the current state is shown.
 3. **Plex Access**: Open the Plex Access section and tap the network-check link. MWBot applies the detected ISP ASN automatically, then updates the same menu with an explicit success or failure result.
 4. **Redownload Control**: Open the Media section and follow the prompts. The bot confirms the target, then blocklists the matching release in Sonarr or Radarr so it is not downloaded again.
-5. **Incidents**: Owner-only, and filed from a firing alert only. New Incident (or `/incident`) lists the alerts currently firing in Alertmanager as buttons; picking one files the incident with the alert's labels, annotations, and firing time. There is no free-text path: any text after `/incident` and any replied-to message is ignored, and the flow stops with a message when Alertmanager is unreachable or nothing is firing. This keeps the issue body machine-generated, which is what the triage agent reasons over. The issue is created with the `incident` label, and MWBot posts a `/oc` comment that triggers read-only OpenCode triage in that repository.
+5. **Incidents**: Owner-only, and filed from a firing alert only. Reachable from an alert's action sheet, or in one tap from `/incident`, which lists the firing alerts as direct filing buttons. The incident carries the alert's labels, annotations, and firing time. There is no free-text path: any text after `/incident` and any replied-to message is ignored, and the flow stops with a message when Alertmanager is unreachable or nothing is firing. This keeps the issue body machine-generated, which is what the triage agent reasons over. The issue is created with the `incident` label, and MWBot posts a `/oc` comment that triggers read-only OpenCode triage in that repository. Filing the same alert twice is refused: the alert fingerprint in the issue body is both the dedup key and what draws `→ #N` on the alert list.
 
 ## How Redownload Works
 
@@ -109,10 +117,12 @@ services:
 - Network detection uses the Worker in `worker/`; see `worker/README.md`. Both Worker environment variables are required for Plex access grants.
 - The temporary WAF rule permits the ASN reported directly by Cloudflare, using the same classification as the WAF `ip.geoip.asnum` field.
 
-## Maintenance Windows
+## Silences
 
-- Alertmanager maintenance state is persisted to `/config/alertmanager_mw_state.json`.
-- Every Alertmanager maintenance silence has a safety expiry.
+- Blanket maintenance-window state is persisted to `/config/alertmanager_mw_state.json`, and every maintenance silence has a safety expiry.
+- Per-alert silences are deliberately stateless: they are identified in Alertmanager by their comment, so Unsilence reads the alert's own `silencedBy` list rather than a local file that a restart could lose.
+- The per-alert silence floor is one day. A sub-day silence does not survive a nightly re-alert, so it defers the same interruption to tomorrow rather than stopping it. The ceiling is one week, because nothing re-notifies when a silence lapses.
+- A silenced alert still appears in the list, marked with the time left on its silence. Silencing removes an alert from your attention; nothing else puts it back.
 
 ## Contributing
 

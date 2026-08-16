@@ -6,12 +6,10 @@ import cfg
 from telebot.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 from modules.common import build_api_headers, normalize_base_url, request_json
 from modules.firewall import (
-    convert_to_local_time,
     disable_asn_to_firewall_rule,
     get_firewall_status_text,
     get_next_firewall_run,
     get_asns_from_firewall_rule,
-    get_rule_modify_date,
     get_rule_status,
     grant_network_access,
     schedule_fw_task,
@@ -27,41 +25,32 @@ from modules.incidents import (
     build_incident_title,
     create_incident,
     find_triage_reports,
+    get_open_incident_index,
     incident_creation_is_configured,
 )
 from modules.maintenance import (
     clear_alertmanager_mw_state,
     format_duration,
-    get_alertmanager_mw_status_text,
+    format_remaining,
+    get_alertmanager_window_text,
     load_alertmanager_mw_state,
-    parse_duration,
     start_alertmanager_mw,
     stop_alertmanager_mw,
 )
 from modules.redownload import (
-    ISSUE_STATUS_OPEN,
-    ISSUE_STATUS_RESOLVED,
     build_issue_label,
     build_redownload_confirmation,
-    build_target_label,
     clear_seerr_read_caches,
-    delete_queue_item,
     execute_redownload,
-    find_queue_item,
     find_seerr_issue_for_media,
     get_all_seerr_issue_ids,
-    get_episode,
     get_issue_target,
     get_open_seerr_issues,
     get_seerr_issue,
     get_seerr_media_details,
     is_issue_open,
-    issue_sort_key,
-    mark_history_failed,
     parse_seerr_issue_url,
     parse_seerr_reference,
-    process_radarr_redownload,
-    process_sonarr_redownload,
     resolve_redownload_issue,
     resolve_seerr_issue,
     select_failed_history_record,
@@ -106,16 +95,6 @@ def _coerce_chat_id(value):
         return int(str(value).strip())
     except (TypeError, ValueError):
         return None
-
-
-def _get_message_telegram_id(message):
-    from_user = getattr(message, 'from_user', None)
-    from_user_id = getattr(from_user, 'id', None)
-    if from_user_id is not None:
-        return from_user_id
-
-    chat = getattr(message, 'chat', None)
-    return getattr(chat, 'id', None)
 
 
 def _get_seerr_users():
@@ -285,15 +264,3 @@ def get_owner_chat_ids():
 def is_auth_chat_id(chat_id):
     _refresh_seerr_access_cache_if_stale()
     return bool(chat_id in get_seerr_access_cache()['authorized_chat_ids'])
-
-
-def is_owner(message):
-    telegram_id = _get_message_telegram_id(message)
-    logging.warning('Owner auth attempt for Telegram ID: %s', telegram_id)
-    return is_owner_chat_id(telegram_id)
-
-
-def is_auth_user(message):
-    telegram_id = _get_message_telegram_id(message)
-    logging.warning('User auth attempt for Telegram ID: %s', telegram_id)
-    return is_auth_chat_id(telegram_id)
