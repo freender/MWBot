@@ -1042,6 +1042,41 @@ class ModulesTest(unittest.TestCase):
             timeout=10,
         )
 
+    def test_get_active_alerts_drops_always_firing_alertnames(self):
+        """Watchdog is a dead-man's switch, not a condition: it must never be reported.
+
+        Filtering at the fetch is what keeps the incident picker from offering to file a
+        GitHub issue against a healthy monitoring pipeline.
+        """
+        alertmanager = importlib.import_module('modules.alertmanager')
+        real = {'labels': {'alertname': 'ZfsPoolUnhealthy', 'host': 'ace', 'severity': 'critical'}}
+        payload = [{'labels': {'alertname': 'Watchdog', 'severity': 'none'}}, real]
+
+        with mock.patch.object(alertmanager, 'request_json', return_value=payload):
+            self.assertEqual(alertmanager.get_active_alerts(), [real])
+            self.assertEqual(alertmanager.get_incident_alert_choices(), [real])
+
+        with mock.patch.object(alertmanager, 'request_json', return_value=payload):
+            status = alertmanager.get_alertmanager_alert_status_text()
+        self.assertNotIn('Watchdog', status)
+        self.assertIn('DOWN: 1 active alert\n', status)
+
+    def test_get_active_alerts_reports_nothing_when_only_excluded_fire(self):
+        alertmanager = importlib.import_module('modules.alertmanager')
+        payload = [{'labels': {'alertname': 'Watchdog', 'severity': 'none'}}]
+
+        with mock.patch.object(alertmanager, 'request_json', return_value=payload):
+            self.assertEqual(alertmanager.get_active_alerts(), [])
+            status = alertmanager.get_alertmanager_alert_status_text()
+        self.assertIn('DOWN: None', status)
+
+    def test_get_active_alerts_unreachable_is_not_an_empty_list(self):
+        """None and [] must stay distinguishable, or an outage reads as 'all clear'."""
+        alertmanager = importlib.import_module('modules.alertmanager')
+
+        with mock.patch.object(alertmanager, 'request_json', side_effect=RuntimeError('boom')):
+            self.assertIsNone(alertmanager.get_active_alerts())
+
     def test_alertmanager_status_reports_all_clear(self):
         alertmanager = importlib.import_module('modules.alertmanager')
 

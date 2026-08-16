@@ -103,6 +103,17 @@ ALERTMANAGER_RESOLVABLE_SOURCES = [
     for value in os.getenv('ALERTMANAGER_RESOLVABLE_SOURCES', 'pve').split(',')
     if value.strip()
 ]
+# Alerts that fire permanently by design and never describe a real condition. `Watchdog`
+# is a dead-man's switch: Alertmanager routes it to an external healthcheck, and its
+# absence -- not its presence -- is the failure signal. Listing it here would misreport a
+# healthy pipeline as an outage and let it be filed as an incident. Excluding it from the
+# bot cannot weaken the switch, which is enforced by the external check, not by MWBot.
+# Comma-separated; set empty to disable the filter.
+ALERTMANAGER_EXCLUDED_ALERTNAMES = {
+    value.strip()
+    for value in os.getenv('ALERTMANAGER_EXCLUDED_ALERTNAMES', 'Watchdog').split(',')
+    if value.strip()
+}
 
 # GitHub incident creation
 GITHUB_INCIDENT_REPO = _get_optional('GITHUB_INCIDENT_REPO', 'freender/homelab-ops')

@@ -69,8 +69,23 @@ def get_silence(silence_id):
         return None
 
 
+def _is_excluded(alert):
+    """True for alerts that fire by design and never describe a real condition.
+
+    See `ALERTMANAGER_EXCLUDED_ALERTNAMES` in `cfg.py`.
+    """
+    alertname = ((alert or {}).get('labels') or {}).get('alertname', '').strip()
+    return alertname in cfg.ALERTMANAGER_EXCLUDED_ALERTNAMES
+
+
 def get_active_alerts():
-    """Fetch all active alerts, including alerts suppressed by maintenance."""
+    """Fetch active alerts, including ones suppressed by maintenance.
+
+    Filtering here rather than at each call site keeps the status list, the incident
+    picker and the resolve picker consistent: an alert we refuse to report is also one
+    we refuse to file.  Returns None on failure so callers can still tell "nothing is
+    firing" apart from "we could not ask".
+    """
     try:
         alerts = request_json(
             'GET',
@@ -86,7 +101,7 @@ def get_active_alerts():
         if not isinstance(alerts, list):
             logging.error('Alertmanager alerts API returned an invalid payload')
             return None
-        return alerts
+        return [alert for alert in alerts if not _is_excluded(alert)]
     except Exception as exc:
         logging.error('Failed to fetch active Alertmanager alerts: %s', exc)
         return None
