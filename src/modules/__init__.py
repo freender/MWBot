@@ -63,10 +63,7 @@ DEFAULT_COMMANDS = {
 
 AUTH_COMMANDS = dict(DEFAULT_COMMANDS)
 
-OWNER_COMMANDS = {
-    **DEFAULT_COMMANDS,
-    'incident': 'Create a homelab incident',
-}
+OWNER_COMMANDS = dict(DEFAULT_COMMANDS)
 
 COMMANDS = OWNER_COMMANDS
 
@@ -253,8 +250,8 @@ def is_owner_chat_id(chat_id):
 def get_owner_chat_ids():
     """The owner's own Telegram chat(s) with the bot -- never a shared group.
 
-    Backed by the same Seerr-derived identity that gates owner-only commands like
-    /incident, so anything that should reach the owner personally (and not a group where
+    Backed by the same Seerr-derived identity that gates owner-only actions like filing an
+    incident, so anything that should reach the owner personally (and not a group where
     other people are watching) targets this instead of cfg.CHAT_ID.
     """
     _refresh_seerr_access_cache_if_stale()

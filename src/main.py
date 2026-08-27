@@ -71,8 +71,8 @@ def _announce_triage_report(report):
     owner on GitHub. MWBot holds an owner token, so a button here would quietly relocate
     that authority into this chat. See modules/incidents.py for the full reasoning.
 
-    Sent only to the owner's own chat(s) -- the same identity that gates /incident, which
-    is what filed the issue in the first place -- and never cfg.CHAT_ID. That is a shared
+    Sent only to the owner's own chat(s) -- the same identity that gates incident filing,
+    which is what filed the issue in the first place -- and never cfg.CHAT_ID. That is a shared
     alert-broadcast chat with other people in it, and a prompt to go and authorise a deploy
     has no business landing where anyone but the owner can read it.
     """
@@ -634,62 +634,6 @@ def _create_incident_from_telegram(chat_id, summary, fingerprint=None, message_i
     )
 
 
-def _show_incident_picker(chat_id, user_id, message_id=None):
-    """The direct filing list behind /incident.
-
-    The Alerts menu reaches filing in two taps -- pick the alert, then File Incident --
-    because it also offers resolve and silence on the way.  /incident is the one-tap
-    path for when filing is already the decision, so its buttons file straight away.
-
-    Incidents are filed from a firing Alertmanager alert only.  Free-text reports are
-    deliberately unsupported: the issue body is what the triage agent reasons over, so
-    it stays machine-generated and consistent.
-    """
-    if not incident_creation_is_configured():
-        _show_incident_result(chat_id, 'GitHub incident creation is not configured.', message_id=message_id)
-        return
-
-    bot.send_chat_action(chat_id, 'typing')
-    alerts = _load_alerts(chat_id, user_id)
-    if alerts is None:
-        _show_incident_result(
-            chat_id,
-            'Alertmanager is unavailable, so no alert can be filed right now.',
-            message_id=message_id,
-        )
-        return
-    if not alerts:
-        _show_incident_result(
-            chat_id,
-            'Nothing is firing. Incidents are filed from an active alert.',
-            message_id=message_id,
-        )
-        return
-
-    incidents = _alert_incident_index()
-    markup = InlineKeyboardMarkup(row_width=1)
-    for index, alert in enumerate(alerts):
-        button = _alert_list_button(alert, index, incidents)
-        button.callback_data = f'alert_incident:{index}'
-        markup.add(button)
-    markup.add(InlineKeyboardButton('⬅ Alerts', callback_data='nav_alerts'))
-    _show_menu(
-        chat_id,
-        '🚨 <b>New Incident</b>\nPick the firing alert to file.',
-        markup,
-        message_id=message_id,
-    )
-
-
-@bot.message_handler(commands=['incident'])
-def command_incident(message):
-    user_id = _get_user_id(message)
-    if not is_owner_chat_id(user_id):
-        _answer_not_allowed(message.chat.id)
-        return
-    _show_incident_picker(message.chat.id, user_id)
-
-
 def _start_redownload_flow(chat_id, user_id, message_id=None):
     bot.send_chat_action(chat_id, 'typing')
     seerr_browser_url = _get_seerr_browser_url()
@@ -1169,12 +1113,6 @@ def _handle_alert_resolve_confirm(call, index_text):
     _show_alerts_menu(chat_id, call.from_user.id, message_id=call.message.message_id, notice=notice)
 
 
-def _handle_incident_new(call):
-    if not _require_owner_callback(call):
-        return
-    _show_incident_picker(call.message.chat.id, call.from_user.id, message_id=call.message.message_id)
-
-
 CALLBACK_HANDLERS = {
     'cancel': _handle_cancel,
     'menu_close': _handle_menu_close,
@@ -1186,7 +1124,6 @@ CALLBACK_HANDLERS = {
     # a tap on one would otherwise do nothing at all; both land in the section that
     # replaced them.
     'nav_am_mw': _handle_nav_alerts,
-    'incident_new': _handle_incident_new,
     'plex_allow': _handle_plex_allow,
     'cmd_ip': _handle_plex_allow,
     'plex_allow_manual': _handle_plex_allow_manual,
@@ -1220,7 +1157,6 @@ ALERT_CALLBACK_HANDLERS = {
 OWNER_ONLY_CALLBACKS = frozenset({
     'nav_alerts',
     'nav_am_mw',
-    'incident_new',
     'am_mw_start',
     'am_mw_stop',
     'plex_reset',

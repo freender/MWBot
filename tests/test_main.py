@@ -198,97 +198,6 @@ class MainAuthTest(unittest.TestCase):
 
         self.assertEqual(labels, ['📡 Plex Access', '🎬 Media', '🚨 Alerts', '✖ Close'])
 
-    def test_incident_command_always_opens_the_alert_picker(self):
-        """Free text and replied-to text are ignored: alerts are the only incident source."""
-        message = mock.Mock(
-            chat=mock.Mock(id=100),
-            from_user=mock.Mock(id=10),
-            text='/incident plex is down',
-            reply_to_message=mock.Mock(text='CRITICAL: plex is missing', caption=None),
-        )
-
-        with mock.patch.object(self.main, '_create_incident_from_telegram') as create_incident, \
-             mock.patch.object(self.main, '_show_incident_picker') as show_picker:
-            self.main.command_incident(message)
-
-        create_incident.assert_not_called()
-        show_picker.assert_called_once_with(100, 10)
-
-    def test_incident_button_is_owner_only(self):
-        call = make_call(20, data='incident_new')
-
-        with mock.patch.object(self.main, '_show_incident_picker') as show_picker, \
-             mock.patch.object(self.main, '_answer_not_allowed') as answer_not_allowed:
-            self.main._handle_incident_new(call)
-
-        show_picker.assert_not_called()
-        answer_not_allowed.assert_called_once_with(100)
-
-    def test_incident_command_is_owner_only(self):
-        for user_id in (20, 30):
-            message = mock.Mock(
-                chat=mock.Mock(id=100),
-                from_user=mock.Mock(id=user_id),
-                text='/incident plex is down',
-                reply_to_message=None,
-            )
-
-            with mock.patch.object(self.main, '_create_incident_from_telegram') as create_incident, \
-                 mock.patch.object(self.main, '_show_incident_picker') as show_picker, \
-                 mock.patch.object(self.main, '_answer_not_allowed') as answer_not_allowed:
-                self.main.command_incident(message)
-
-            create_incident.assert_not_called()
-            show_picker.assert_not_called()
-            answer_not_allowed.assert_called_once_with(100)
-
-    def test_incident_picker_files_in_one_tap(self):
-        """/incident keeps filing one tap deep; the Alerts list is the two-tap path."""
-        alerts = [make_alert(), make_alert(alertname='ContainerMissing', host='tower', severity='critical')]
-
-        with mock.patch('modules.alertmanager.get_alert_choices', return_value=alerts), \
-             mock.patch.object(self.main, 'get_open_incident_index', return_value={}), \
-             mock.patch.object(self.main, '_show_menu') as show_menu:
-            self.main._show_incident_picker(100, 10)
-
-        markup = show_menu.call_args.args[2]
-        labels = button_texts(markup)
-
-        self.assertIn('🟡 ace: SystemdUnitFailed', labels)
-        self.assertIn('🔴 tower: ContainerMissing', labels)
-        self.assertEqual(
-            [button.callback_data for row in markup.keyboard for button in row],
-            ['alert_incident:0', 'alert_incident:1', 'nav_alerts'],
-        )
-        self.assertEqual(self.main._pending_alerts['100:10'], alerts)
-
-    def test_incident_picker_offers_no_free_text_escape_hatch(self):
-        alerts = [make_alert()]
-
-        with mock.patch('modules.alertmanager.get_alert_choices', return_value=alerts), \
-             mock.patch.object(self.main, 'get_open_incident_index', return_value={}), \
-             mock.patch.object(self.main, '_show_menu') as show_menu:
-            self.main._show_incident_picker(100, 10)
-
-        labels = button_texts(show_menu.call_args.args[2])
-
-        self.assertEqual(labels, ['🟡 ace: SystemdUnitFailed', '⬅ Alerts'])
-
-    def test_incident_picker_stops_when_alertmanager_unavailable(self):
-        with mock.patch('modules.alertmanager.get_alert_choices', return_value=None), \
-             mock.patch.object(self.main, '_show_incident_result') as show_result:
-            self.main._show_incident_picker(100, 10)
-
-        self.assertIn('Alertmanager is unavailable', show_result.call_args.args[1])
-        self.assertNotIn('100:10', self.main._pending_alerts)
-
-    def test_incident_picker_stops_when_nothing_is_firing(self):
-        with mock.patch('modules.alertmanager.get_alert_choices', return_value=[]), \
-             mock.patch.object(self.main, '_show_incident_result') as show_result:
-            self.main._show_incident_picker(100, 10)
-
-        self.assertIn('Nothing is firing', show_result.call_args.args[1])
-
     def test_alert_incident_creates_incident_from_alert(self):
         self.main._pending_alerts['100:10'] = [make_alert()]
         call = make_call(10, data='alert_incident:0')
@@ -964,7 +873,6 @@ class OwnerOnlySurfaceTest(unittest.TestCase):
                 call = make_call(20, data=data)
                 with mock.patch.object(self.main, '_answer_not_allowed') as not_allowed, \
                      mock.patch.object(self.main, '_show_alerts_menu'), \
-                     mock.patch.object(self.main, '_show_incident_picker'), \
                      mock.patch.object(self.main, '_show_plex_menu'), \
                      mock.patch.object(self.main, '_show_media_menu'), \
                      mock.patch.object(self.main, '_show_plex_result'), \
@@ -1009,32 +917,12 @@ class OwnerOnlySurfaceTest(unittest.TestCase):
                 request_json.assert_not_called()
                 show_menu.assert_not_called()
 
-    def test_incident_command_is_refused_without_owner_identity(self):
-        self.modules._seerr_access_cache.update({'owner_chat_ids': set()})
-        message = mock.Mock(
-            chat=mock.Mock(id=100),
-            from_user=mock.Mock(id=10),
-            text='/incident',
-            reply_to_message=None,
-        )
-
-        with mock.patch.object(self.main, '_show_incident_picker') as show_picker, \
-             mock.patch.object(self.main, '_answer_not_allowed') as not_allowed:
-            self.main.command_incident(message)
-
-        show_picker.assert_not_called()
-        not_allowed.assert_called_once_with(100)
-
     def test_a_message_without_a_sender_is_not_the_owner(self):
         """`from_user` is absent on channel posts; None must not match an owner id."""
-        message = mock.Mock(chat=mock.Mock(id=100), from_user=None, text='/incident')
+        message = mock.Mock(chat=mock.Mock(id=100), from_user=None)
 
-        with mock.patch.object(self.main, '_show_incident_picker') as show_picker, \
-             mock.patch.object(self.main, '_answer_not_allowed') as not_allowed:
-            self.main.command_incident(message)
-
-        show_picker.assert_not_called()
-        not_allowed.assert_called_once_with(100)
+        self.assertIsNone(self.main._get_user_id(message))
+        self.assertFalse(self.main.is_owner_chat_id(self.main._get_user_id(message)))
 
     def test_home_menu_hides_the_alerts_section_from_a_non_owner(self):
         for user_id in (20, 30):

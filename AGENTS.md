@@ -96,7 +96,7 @@ boundary:
   now one owner comment. The moment worth a notification moved with it, from "a fix is ready
   to approve" to "a diagnosis is ready to read".
 - **Triage report chat target.** `_announce_triage_report` sends only to
-  `get_owner_chat_ids()` (the same Seerr-derived identity that gates `/incident`), never
+  `get_owner_chat_ids()` (the same Seerr-derived identity that gates incident filing), never
   `cfg.CHAT_ID`. The message prompts the reader to go and authorise a deploy; `cfg.CHAT_ID`
   is a shared alert-broadcast chat other people are in. Keep this on the owner identity even
   if `CHAT_ID` is later split for other notification types.

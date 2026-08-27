@@ -137,10 +137,7 @@ class ModulesTest(unittest.TestCase):
     def test_command_metadata_exposes_menu_only_entrypoint(self):
         self.assertEqual(self.modules.DEFAULT_COMMANDS, {'start': 'Open main menu'})
         self.assertEqual(self.modules.AUTH_COMMANDS, {'start': 'Open main menu'})
-        self.assertEqual(self.modules.OWNER_COMMANDS, {
-            'start': 'Open main menu',
-            'incident': 'Create a homelab incident',
-        })
+        self.assertEqual(self.modules.OWNER_COMMANDS, {'start': 'Open main menu'})
         self.assertEqual(self.modules.COMMANDS, self.modules.OWNER_COMMANDS)
         self.assertNotIn('mw', self.modules.DEFAULT_COMMANDS)
         self.assertNotIn('help', self.modules.DEFAULT_COMMANDS)
@@ -177,7 +174,7 @@ class ModulesTest(unittest.TestCase):
         owner_call = bot.set_my_commands.call_args_list[2]
         self.assertEqual(
             [command.command for command in owner_call.args[0]],
-            ['start', 'incident'],
+            ['start'],
         )
         self.assertEqual(owner_call.kwargs['scope'].type, 'chat')
         self.assertEqual(owner_call.kwargs['scope'].chat_id, 3)
