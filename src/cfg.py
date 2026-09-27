@@ -111,11 +111,11 @@ ALERTMANAGER_OPEN_MW_DURATION = _get_duration('ALERTMANAGER_OPEN_MW_DURATION', '
 ALERTMANAGER_ALERT_SILENCE_DURATIONS = _get_durations(
     'ALERTMANAGER_ALERT_SILENCE_DURATIONS', '1d,3d,7d')
 # Alerts that represent one-shot events rather than a live condition, identified by
-# their `source` label. Only these can be dismissed by hand: a metric-based alert
-# would simply be re-sent by vmalert on its next evaluation.
+# their `source` label: the PVE and PBS notification webhooks. Only these can be dismissed
+# by hand: a metric-based alert would simply be re-sent by vmalert on its next evaluation.
 ALERTMANAGER_RESOLVABLE_SOURCES = [
     value.strip()
-    for value in os.getenv('ALERTMANAGER_RESOLVABLE_SOURCES', 'pve').split(',')
+    for value in os.getenv('ALERTMANAGER_RESOLVABLE_SOURCES', 'pve,pbs').split(',')
     if value.strip()
 ]
 # Alerts that fire permanently by design and never describe a real condition. `Watchdog`

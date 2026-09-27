@@ -1014,6 +1014,13 @@ class ModulesTest(unittest.TestCase):
         self.assertFalse(alertmanager.is_resolvable(metric_alert))
         self.assertTrue(alertmanager.is_resolvable(event_alert))
 
+    def test_pbs_notifications_are_resolvable_by_default(self):
+        """PBS pushes the same one-shot events as PVE; they never clear on their own."""
+        alertmanager = importlib.import_module('modules.alertmanager')
+        pbs_alert = {'labels': {'alertname': 'ProxmoxNotification', 'host': 'xur', 'source': 'pbs'}}
+        self.assertIn('pbs', alertmanager.cfg.ALERTMANAGER_RESOLVABLE_SOURCES)
+        self.assertTrue(alertmanager.is_resolvable(pbs_alert))
+
     def test_silence_alert_matches_that_alert_exactly(self):
         alertmanager = importlib.import_module('modules.alertmanager')
         alert = {'labels': {'alertname': 'ContainerMissing', 'host': 'tower', 'severity': 'critical'}}
