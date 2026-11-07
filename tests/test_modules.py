@@ -1021,6 +1021,13 @@ class ModulesTest(unittest.TestCase):
         self.assertIn('pbs', alertmanager.cfg.ALERTMANAGER_RESOLVABLE_SOURCES)
         self.assertTrue(alertmanager.is_resolvable(pbs_alert))
 
+    def test_probe_findings_are_resolvable_by_default(self):
+        """A probe finding is re-checked daily, not re-sent by vmalert, so Resolve sticks."""
+        alertmanager = importlib.import_module('modules.alertmanager')
+        probe_alert = {'labels': {'alertname': 'ProbeFinding', 'host': 'helm', 'source': 'probe'}}
+        self.assertIn('probe', alertmanager.cfg.ALERTMANAGER_RESOLVABLE_SOURCES)
+        self.assertTrue(alertmanager.is_resolvable(probe_alert))
+
     def test_silence_alert_matches_that_alert_exactly(self):
         alertmanager = importlib.import_module('modules.alertmanager')
         alert = {'labels': {'alertname': 'ContainerMissing', 'host': 'tower', 'severity': 'critical'}}
