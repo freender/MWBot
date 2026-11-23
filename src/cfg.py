@@ -136,7 +136,21 @@ ALERTMANAGER_EXCLUDED_ALERTNAMES = {
 GITHUB_INCIDENT_REPO = _get_optional('GITHUB_INCIDENT_REPO', 'freender/homelab-ops')
 GITHUB_INCIDENT_TOKEN = _get_optional('GITHUB_INCIDENT_TOKEN')
 
-# How often to look for a triage report the incident repo has posted and is waiting on the
-# owner to read. Zero disables the watcher entirely. This only ever reads and notifies --
-# asking for the fix stays a GitHub action taken by the owner, see modules/incidents.py.
-GITHUB_TRIAGE_WATCH_SECONDS = int(_get_optional('GITHUB_TRIAGE_WATCH_SECONDS', '60') or 0)
+# Incident triage runs as a session on an OpenCode server, which the owner then opens in
+# OpenChamber and takes over interactively. All four of URL, password, directory and
+# public link base are deployment facts and have no defaults; triage is off until set.
+OPENCODE_URL = _get_optional('OPENCODE_URL')
+OPENCODE_USERNAME = _get_optional('OPENCODE_USERNAME', 'opencode')
+OPENCODE_PASSWORD = _get_optional('OPENCODE_PASSWORD')
+# The directory the session is created in; it decides which project agents load.
+OPENCODE_INCIDENT_DIRECTORY = _get_optional('OPENCODE_INCIDENT_DIRECTORY')
+OPENCODE_INCIDENT_AGENT = _get_optional('OPENCODE_INCIDENT_AGENT', 'incident-triage')
+# Browser-facing OpenChamber base URL for the Telegram and issue links.
+OPENCHAMBER_PUBLIC_URL = _get_optional('OPENCHAMBER_PUBLIC_URL')
+
+# How often to check whether a triage session has finished and posted its verdict. Zero
+# disables the watcher; the session link is still sent when the incident is filed.
+OPENCODE_TRIAGE_WATCH_SECONDS = int(_get_optional('OPENCODE_TRIAGE_WATCH_SECONDS', '60') or 0)
+# A session that has neither finished with a verdict nor been taken over by then is
+# reported as having produced no report and is no longer watched.
+OPENCODE_TRIAGE_TIMEOUT_SECONDS = int(_get_optional('OPENCODE_TRIAGE_TIMEOUT_SECONDS', '2700') or 0)

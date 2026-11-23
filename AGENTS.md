@@ -59,57 +59,62 @@ the owner set, which must keep failing closed: no owner means the section is shu
 
 ## Incident Pipeline Contract
 
-MWBot is the **producer** for an incident pipeline whose consumer lives in another repository.
-`src/modules/incidents.py` opens an issue in `GITHUB_INCIDENT_REPO` and then posts a comment
-that triggers a triage workflow **in that repo**. Five things are load-bearing across the
-boundary:
+MWBot is the **producer** for an incident pipeline whose other half lives elsewhere.
+`src/modules/incidents.py` opens an issue in `GITHUB_INCIDENT_REPO`, then starts a triage
+**session on an OpenCode server** (`OPENCODE_URL`) and links it in Telegram via OpenChamber
+(`OPENCHAMBER_PUBLIC_URL`). The owner takes the session over interactively; MWBot only
+starts it, links it, and posts its report. These are load-bearing:
 
-- **Repo.** `GITHUB_INCIDENT_REPO` (`src/cfg.py`) defaults to `freender/homelab-ops`. The
-  triage workflow exists only there; pointing this elsewhere files issues nothing consumes.
-- **Trigger token.** `TRIAGE_TRIGGER_COMMENT` must begin with `/oc`. The workflow matches that
-  token in the comment body. The rest of the sentence is prompt context and may be reworded;
-  the leading token may not.
-- **Comment identity.** `GITHUB_INCIDENT_TOKEN` must belong to the repository owner. The
-  workflow also gates on the commenting actor being the owner, so a GitHub App or bot token
-  would post the comment successfully and triage would silently never run.
+- **Repo.** `GITHUB_INCIDENT_REPO` (`src/cfg.py`) defaults to `freender/homelab-ops`.
+- **Agent and directory.** The session is created with `agent=OPENCODE_INCIDENT_AGENT` in
+  `location.directory=OPENCODE_INCIDENT_DIRECTORY`; the directory decides which project
+  agents exist. That agent's own permissions are the read-only boundary between untrusted
+  alert text and a shell that reaches every homelab host. **Never send a `permissions`
+  override with the session** — `test_create_incident_opens_issue_and_starts_a_triage_session`
+  asserts there is none.
+- **The prompt marks the incident untrusted.** `build_triage_prompt` fences the title and
+  body and says so. Keep that framing if you reword it.
 - **Alert fingerprint marker.** `build_incident_body` appends
   `<!-- alert-fingerprint: <fp> -->`. It is how we refuse to file the same firing alert
-  twice, how the alerts list draws `→ #N` on an alert that is already filed, and how the
-  consuming repo tells whether the alert an incident came from has stopped firing. It is
+  twice and how the alerts list draws `→ #N` on an alert that is already filed. It is
   appended after the alert text is truncated so a long alert cannot push it out of the body;
   keep it that way. `get_open_incident_index` reads it back, validating the same shape the
   writer is allowed to emit.
+- **Session marker.** Once a session starts, the issue body is edited to carry a
+  `Triage session:` link line and `<!-- opencode-session: ses_... -->`. The index reads it
+  back, which is what gives an already-filed alert its **Open Triage Session** button and
+  what makes a repeat filing reuse the session instead of starting a second investigation.
+  A session the server answers 404 for is replaced; one we could not check is assumed alive.
 - **Incident index caching.** `get_open_incident_index(use_cache=True)` exists for menu
   renders, which happen in bursts (list → action sheet → Back → list, plus Refresh). Dedup
   must never opt in: `find_open_incident` gates whether a duplicate issue gets filed, and a
   cached "not filed" from thirty seconds ago is exactly the stale answer the unindexed
   listing exists to avoid. `create_incident` invalidates the cache after filing so the list
   you return to shows the new number.
-- **Triage report heading.** `find_triage_reports` matches a `## Verdict` heading from
-  `github-actions[bot]` in the consuming repo. It is read-only and only notifies: asking for
-  the fix stays a GitHub action taken by the owner, because that comment authorises a deploy
-  to real hosts. **Do not add a button that posts `/fix`** — the token here is an owner
-  token, so it would move that authority into a Telegram chat.
+- **Report heading.** `poll_triage_sessions` treats a session as done when it is not in
+  `/api/session/active` **and** its newest assistant message contains `## Verdict` — not
+  merely when it goes idle, because an agent waiting on a subagent goes idle and wakes
+  again. It then posts the report on the issue (owner token) and announces the verdict.
+  Renaming that heading in the agent silently stops both. `failed` posts `## Triage failed`;
+  a deadline (`OPENCODE_TRIAGE_TIMEOUT_SECONDS`) only notifies, since a long session is
+  usually one the owner has taken over. `interrupted` or deleted sessions end quietly.
+- **No action buttons.** `_announce_triage_session` carries URL buttons only. Acting on a
+  diagnosis happens in the session, by the owner; a callback here would turn a chat tap into
+  an instruction to an agent with a shell on every homelab host.
+- **Owner chat only.** `_announce_triage_session` sends only to `get_owner_chat_ids()` (the
+  same Seerr-derived identity that gates incident filing), never `cfg.CHAT_ID`, a shared
+  alert-broadcast chat other people are in. The verdict describes the homelab's faults.
 
-  This replaced a match on a `## Fix prepared` heading that the consuming repo no longer
-  posts: a fix there used to be prepared as a reviewable artifact and approved by ID, and is
-  now one owner comment. The moment worth a notification moved with it, from "a fix is ready
-  to approve" to "a diagnosis is ready to read".
-- **Triage report chat target.** `_announce_triage_report` sends only to
-  `get_owner_chat_ids()` (the same Seerr-derived identity that gates incident filing), never
-  `cfg.CHAT_ID`. The message prompts the reader to go and authorise a deploy; `cfg.CHAT_ID`
-  is a shared alert-broadcast chat other people are in. Keep this on the owner identity even
-  if `CHAT_ID` is later split for other notification types.
-
-Breaking any of these produces **no local signal** — the issue is still filed, the comment
-still posts, and the failure is a report that never appears in a repo this suite cannot see.
-`tests/test_modules.py` covers the trigger token, the fingerprint marker and the triage-report
-parse; the repo default and the token identity are not testable from here. Change them
-deliberately.
+Triage being unconfigured or unreachable never blocks filing: the issue is still created and
+the Telegram reply carries the reason as a warning. `tests/test_modules.py` covers the
+markers, the session request shape, reuse, and the watcher's end conditions; the server's
+real API shape is not testable from here, so verify a live filing after changing it.
 
 On the authoring host, `opencode.json` references the consuming repo as `homelab-ops` for
-read access. That repo is private: do not copy its workflow internals, runner details, or
-infrastructure notes into this public repository.
+read access. That repo is private: do not copy its agent internals, host details, or
+infrastructure notes into this public repository, and keep `OPENCODE_URL`,
+`OPENCODE_INCIDENT_DIRECTORY` and `OPENCHAMBER_PUBLIC_URL` out of it — they have no defaults
+on purpose.
 
 ## Validation
 

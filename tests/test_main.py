@@ -232,13 +232,22 @@ class MainAuthTest(unittest.TestCase):
         create_incident.assert_not_called()
         self.assertIn('expired', show_result.call_args.args[1])
 
-    def test_announce_triage_report_targets_the_owner_chat_only(self):
-        # owner_chat_ids is {10} from setUp; cfg.CHAT_ID ('100') is the shared alert
-        # broadcast chat and must never see a prompt to go and authorise a deploy.
-        self.main._announce_triage_report({
+    def _report(self, **overrides):
+        result = {
             'issue': 15,
-            'url': 'https://github.com/freender/homelab-ops/issues/15',
-        })
+            'status': 'report',
+            'verdict': 'backup-local points at a retired host <b>.',
+            'url': 'https://github.com/freender/homelab-ops/issues/15#issuecomment-1',
+            'session_id': 'ses_abcdefgh12345678',
+            'session_url': 'https://chamber.example.net/?session=ses_abcdefgh12345678',
+        }
+        result.update(overrides)
+        return result
+
+    def test_announce_triage_session_targets_the_owner_chat_only(self):
+        # owner_chat_ids is {10} from setUp; cfg.CHAT_ID ('100') is the shared alert
+        # broadcast chat and must never see a verdict describing the homelab's faults.
+        self.main._announce_triage_session(self._report())
 
         self.assertEqual(len(self.main.bot.sent_messages), 1)
         args, kwargs = self.main.bot.sent_messages[0]
@@ -247,29 +256,36 @@ class MainAuthTest(unittest.TestCase):
         self.assertNotEqual(str(chat_id), self.cfg.CHAT_ID)
         text = args[1] if len(args) > 1 else kwargs.get('text')
         self.assertIn('Triage complete', text)
-        self.assertIn('/fix', text)
+        # The verdict is agent output and is escaped, never rendered as markup.
+        self.assertIn('retired host &lt;b&gt;.', text)
 
-    def test_announce_triage_report_carries_no_action_button(self):
-        # A button that fixed the incident from here would move the authority to deploy off
-        # GitHub and into this chat, where the owner token is what would be acting.
-        self.main._announce_triage_report({
-            'issue': 15,
-            'url': 'https://github.com/freender/homelab-ops/issues/15',
-        })
+    def test_announce_triage_session_carries_links_only(self):
+        # Acting on a diagnosis happens in the session. A callback button here would turn a
+        # chat tap into an instruction to an agent with a shell on every homelab host.
+        self.main._announce_triage_session(self._report())
 
         _, kwargs = self.main.bot.sent_messages[0]
         markup = kwargs.get('reply_markup')
         buttons = [button for row in (markup.keyboard if markup else []) for button in row]
+        self.assertEqual(len(buttons), 2)
         self.assertTrue(all(getattr(button, 'url', None) for button in buttons))
+        self.assertIn('session=ses_abcdefgh12345678', buttons[0].url)
 
-    def test_announce_triage_report_reaches_every_owner_chat(self):
+    def test_announce_triage_session_says_when_there_is_no_report(self):
+        self.main._announce_triage_session(self._report(status='failed', verdict=''))
+
+        args, kwargs = self.main.bot.sent_messages[0]
+        text = args[1] if len(args) > 1 else kwargs.get('text')
+        self.assertIn('without a report', text)
+
+    def test_announce_triage_session_reaches_every_owner_chat(self):
         self.modules._seerr_access_cache.update({
             'authorized_chat_ids': {10, 11, 20},
             'owner_chat_ids': {10, 11},
             'loaded': True,
         })
 
-        self.main._announce_triage_report({'issue': 15, 'url': None})
+        self.main._announce_triage_session(self._report(url=None, session_url=''))
 
         chat_ids = sorted(
             (args[0] if args else kwargs.get('chat_id'))
@@ -277,7 +293,7 @@ class MainAuthTest(unittest.TestCase):
         )
         self.assertEqual(chat_ids, [10, 11])
 
-    def test_announce_triage_report_logs_and_sends_nothing_without_an_owner_chat(self):
+    def test_announce_triage_session_logs_and_sends_nothing_without_an_owner_chat(self):
         self.modules._seerr_access_cache.update({
             'authorized_chat_ids': set(),
             'owner_chat_ids': set(),
@@ -285,10 +301,32 @@ class MainAuthTest(unittest.TestCase):
         })
 
         with self.assertLogs(level='ERROR') as logs:
-            self.main._announce_triage_report({'issue': 15, 'url': None})
+            self.main._announce_triage_session(self._report())
 
         self.assertEqual(self.main.bot.sent_messages, [])
         self.assertTrue(any('No owner chat id' in message for message in logs.output))
+
+    def test_incident_result_links_the_session_first(self):
+        markup = self.main._incident_result_markup({
+            'number': 7,
+            'url': 'https://github.com/freender/homelab-ops/issues/7',
+            'session_url': 'https://chamber.example.net/?session=ses_abcdefgh12345678',
+        })
+
+        first = markup.keyboard[0][0]
+        self.assertEqual(first.text, '🧭 Open Triage Session')
+
+    def test_incident_result_text_reports_reuse_and_warnings(self):
+        text = self.main._incident_result_text({
+            'number': 7, 'duplicate': True, 'session_id': 'ses_abcdefgh12345678',
+            'session_reused': True,
+        })
+        self.assertIn('Already filed as #7', text)
+        self.assertIn('still open', text)
+
+        text = self.main._incident_result_text({'number': 8, 'warning': 'OpenCode said no.'})
+        self.assertIn('#8 created', text)
+        self.assertIn('OpenCode said no.', text)
 
     def test_home_menu_tracks_latest_message_id(self):
         with mock.patch.object(self.main, '_show_menu', return_value=77) as show_menu:

@@ -26,6 +26,10 @@ def load_modules_package(temp_dir):
         'ALERTMANAGER_URL': 'http://alertmanager.local:9093',
         'GITHUB_INCIDENT_REPO': 'freender/homelab-ops',
         'GITHUB_INCIDENT_TOKEN': 'github-token',
+        'OPENCODE_URL': 'http://opencode.example.test:4096',
+        'OPENCODE_PASSWORD': 'opencode-password',
+        'OPENCODE_INCIDENT_DIRECTORY': '/srv/incidents',
+        'OPENCHAMBER_PUBLIC_URL': 'https://chamber.example.net/',
         'TZ': 'UTC',
         'SEERR_BASE_URL': 'https://seerr.example.com',
         'SEERR_API_KEY': 'seerr-key',
@@ -88,6 +92,14 @@ class ModulesTest(unittest.TestCase):
             'owner_chat_ids': set(),
             'loaded': False,
         })
+        # Nothing in this suite may reach a real OpenCode server: any test that does not
+        # stub the session API sees it as unreachable.
+        incidents = importlib.import_module('modules.incidents')
+        incidents.TRIAGE_STATE_FILE = os.path.join(self.temp_dir.name, 'triage_sessions.json')
+        opencode_patch = mock.patch.object(
+            incidents.requests, 'request', side_effect=incidents.requests.RequestException)
+        opencode_patch.start()
+        self.addCleanup(opencode_patch.stop)
 
     def tearDown(self):
         self.temp_dir.cleanup()
@@ -212,47 +224,77 @@ class ModulesTest(unittest.TestCase):
 
         self.assertNotIn('alert-fingerprint', body)
 
-    def test_triage_trigger_comment_keeps_the_cross_repo_token(self):
-        # The triage workflow lives in GITHUB_INCIDENT_REPO and gates on a leading '/oc'
-        # token. Dropping the token disables triage in that repo with no failure visible
-        # from here. See AGENTS.md "Incident Pipeline Contract".
-        #
-        # The trailing space is load-bearing, which is why this asserts '/oc ' and not
-        # '/oc'. opencode derives the model's prompt from this comment body: when the body
-        # is *exactly* a trigger token it substitutes its own canned prompt -- literally
-        # "Summarize this thread" -- and only otherwise passes the body through. A bare
-        # '/oc' therefore still triages successfully and still posts a report, but the
-        # agent was asked to summarise a thread rather than investigate an incident. Green
-        # and wrong is the worst failure available here, so keep text after the token.
-        # Rewording that text is safe; deleting it is not.
-        incidents = importlib.import_module('modules.incidents')
+    def _response(self, status_code=200, payload=None):
+        response = mock.Mock(status_code=status_code)
+        response.json.return_value = payload if payload is not None else {}
+        return response
 
-        self.assertTrue(incidents.TRIAGE_TRIGGER_COMMENT.startswith('/oc '))
+    def _opencode_api(self, routes):
+        """A requests.request stand-in answering OpenCode calls from a (method, path) map."""
+        calls = []
 
-    def test_create_incident_opens_issue_and_requests_triage(self):
-        response = mock.Mock(status_code=201)
-        response.json.return_value = {
+        def handler(method, url, **kwargs):
+            path = url.split('4096', 1)[1]
+            calls.append((method, path, kwargs))
+            if (method, path) not in routes:
+                raise AssertionError(f'unexpected OpenCode call {method} {path}')
+            return routes[(method, path)]
+
+        return handler, calls
+
+    def _session_routes(self, session_id='ses_abcdefgh12345678', prompt_status=200):
+        return {
+            ('POST', '/api/session'): self._response(200, {'data': {'id': session_id}}),
+            ('POST', f'/api/session/{session_id}/prompt'): self._response(prompt_status, {'data': {}}),
+        }
+
+    def test_create_incident_opens_issue_and_starts_a_triage_session(self):
+        created = self._response(201, {
             'number': 7,
             'title': 'plex is down',
             'html_url': 'https://github.com/freender/homelab-ops/issues/7',
-        }
+        })
         incidents = importlib.import_module('modules.incidents')
+        handler, calls = self._opencode_api(self._session_routes())
 
-        with mock.patch.object(incidents.requests, 'post', return_value=response) as post:
+        with mock.patch.object(incidents.requests, 'post', return_value=created) as post, \
+                mock.patch.object(incidents.requests, 'patch', return_value=self._response(200)) as patch, \
+                mock.patch.object(incidents.requests, 'request', side_effect=handler):
             incident, error = self.modules.create_incident('plex is down on tower')
 
         self.assertIsNone(error)
         self.assertEqual(incident['number'], 7)
         self.assertNotIn('warning', incident)
-        self.assertEqual(post.call_count, 2)
+        self.assertNotIn('body', incident)
+        self.assertEqual(incident['session_id'], 'ses_abcdefgh12345678')
+        self.assertEqual(
+            incident['session_url'], 'https://chamber.example.net/?session=ses_abcdefgh12345678')
 
-        issue_call, comment_call = post.call_args_list
-        self.assertEqual(issue_call.kwargs['json']['labels'], ['incident'])
-        self.assertNotIn('github-token', str(issue_call.kwargs['json']))
-        self.assertTrue(comment_call.args[0].endswith('/issues/7/comments'))
-        self.assertTrue(comment_call.kwargs['json']['body'].startswith('/oc '))
+        # One GitHub write to file the issue; no /oc comment any more.
+        self.assertEqual(post.call_count, 1)
+        self.assertEqual(post.call_args.kwargs['json']['labels'], ['incident'])
+        self.assertNotIn('github-token', str(post.call_args.kwargs['json']))
 
-    def test_create_incident_reuses_the_open_incident_for_the_same_alert(self):
+        (_, _, create), (_, _, prompt) = calls
+        self.assertEqual(create['json']['agent'], 'incident-triage')
+        self.assertEqual(create['json']['location'], {'directory': '/srv/incidents'})
+        # The agent's own permissions are the read-only boundary; MWBot never overrides them.
+        self.assertNotIn('permissions', create['json'])
+        self.assertEqual(create['auth'], ('opencode', 'opencode-password'))
+        self.assertIn('freender/homelab-ops#7', prompt['json']['text'])
+        self.assertIn('untrusted', prompt['json']['text'])
+        self.assertIn('plex is down on tower', prompt['json']['text'])
+
+        # The session is written into the issue body so the alert list can link to it.
+        patched_body = patch.call_args.kwargs['json']['body']
+        self.assertTrue(patch.call_args.args[0].endswith('/issues/7'))
+        self.assertIn('<!-- opencode-session: ses_abcdefgh12345678 -->', patched_body)
+        self.assertIn('plex is down on tower', patched_body)
+
+        with open(incidents.TRIAGE_STATE_FILE, encoding='utf-8') as handle:
+            self.assertEqual(json.load(handle)['sessions']['ses_abcdefgh12345678']['issue'], 7)
+
+    def test_create_incident_reuses_the_open_incident_and_its_session(self):
         incidents = importlib.import_module('modules.incidents')
         listing = mock.Mock(status_code=200)
         listing.json.return_value = [
@@ -261,19 +303,79 @@ class ModulesTest(unittest.TestCase):
                 'number': 5,
                 'title': 'SystemdUnitFailed on ace',
                 'html_url': 'https://github.com/freender/homelab-ops/issues/5',
-                'body': 'body\n<!-- alert-fingerprint: a1b2c3d4e5f60718 -->',
+                'body': 'body\n<!-- alert-fingerprint: a1b2c3d4e5f60718 -->\n'
+                        '<!-- opencode-session: ses_abcdefgh12345678 -->',
             },
         ]
+        handler, calls = self._opencode_api({
+            ('GET', '/api/session/ses_abcdefgh12345678'): self._response(200, {'data': {}}),
+        })
 
         with mock.patch.object(incidents.requests, 'get', return_value=listing), \
-                mock.patch.object(incidents.requests, 'post') as post:
+                mock.patch.object(incidents.requests, 'post') as post, \
+                mock.patch.object(incidents.requests, 'patch') as patch, \
+                mock.patch.object(incidents.requests, 'request', side_effect=handler):
             incident, error = self.modules.create_incident('alert', fingerprint='a1b2c3d4e5f60718')
 
         self.assertIsNone(error)
         self.assertEqual(incident['number'], 5)
         self.assertTrue(incident['duplicate'])
-        # Nothing filed and, just as importantly, no second triage run requested.
+        self.assertTrue(incident['session_reused'])
+        self.assertIn('ses_abcdefgh12345678', incident['session_url'])
+        # Nothing filed, nothing edited, and no second investigation started.
         post.assert_not_called()
+        patch.assert_not_called()
+        self.assertEqual([call[:2] for call in calls], [('GET', '/api/session/ses_abcdefgh12345678')])
+
+    def test_create_incident_replaces_a_session_the_server_no_longer_has(self):
+        incidents = importlib.import_module('modules.incidents')
+        listing = self._incident_listing([{
+            'number': 5, 'title': 'SystemdUnitFailed on ace', 'html_url': 'u5',
+            'body': 'body\n<!-- alert-fingerprint: a1b2c3d4e5f60718 -->\n'
+                    'Triage session: `ses_oldoldold1234`\n<!-- opencode-session: ses_oldoldold1234 -->',
+        }])
+        routes = self._session_routes(session_id='ses_newnewnew5678')
+        routes[('GET', '/api/session/ses_oldoldold1234')] = self._response(404)
+        handler, _ = self._opencode_api(routes)
+
+        with mock.patch.object(incidents.requests, 'get', return_value=listing), \
+                mock.patch.object(incidents.requests, 'patch', return_value=self._response(200)) as patch, \
+                mock.patch.object(incidents.requests, 'request', side_effect=handler):
+            incident, _ = self.modules.create_incident('alert', fingerprint='a1b2c3d4e5f60718')
+
+        self.assertEqual(incident['session_id'], 'ses_newnewnew5678')
+        self.assertNotIn('session_reused', incident)
+        body = patch.call_args.kwargs['json']['body']
+        self.assertNotIn('ses_oldoldold1234', body)
+        self.assertEqual(body.count('opencode-session'), 1)
+        self.assertIn('<!-- alert-fingerprint: a1b2c3d4e5f60718 -->', body)
+
+    def test_incident_index_reads_the_session_marker(self):
+        incidents = importlib.import_module('modules.incidents')
+        body = incidents.add_session_to_body(
+            incidents.build_incident_body('alert', fingerprint='a1b2c3d4e5f60718'),
+            'ses_abcdefgh12345678')
+        listing = self._incident_listing([{'number': 5, 'title': 'a', 'html_url': 'u5', 'body': body}])
+
+        with mock.patch.object(incidents.requests, 'get', return_value=listing):
+            index = incidents.get_open_incident_index()
+
+        self.assertEqual(index['a1b2c3d4e5f60718']['session_id'], 'ses_abcdefgh12345678')
+
+    def test_add_session_to_body_rejects_a_malformed_session_id(self):
+        incidents = importlib.import_module('modules.incidents')
+
+        self.assertEqual(incidents.add_session_to_body('body', 'ses_x --> <b>'), 'body')
+        self.assertEqual(incidents.triage_session_url('not-a-session'), '')
+
+    def test_triage_session_url_needs_a_public_base(self):
+        incidents = importlib.import_module('modules.incidents')
+
+        with mock.patch.object(incidents.cfg, 'OPENCHAMBER_PUBLIC_URL', None):
+            self.assertEqual(incidents.triage_session_url('ses_abcdefgh12345678'), '')
+            self.assertIn(
+                'Triage session: `ses_abcdefgh12345678`',
+                incidents.add_session_to_body('body', 'ses_abcdefgh12345678'))
 
     def test_create_incident_files_when_no_open_incident_matches(self):
         incidents = importlib.import_module('modules.incidents')
@@ -432,81 +534,121 @@ class ModulesTest(unittest.TestCase):
         with mock.patch.object(incidents.requests, 'get', return_value=filed):
             self.assertIn('a1b2c3d4e5f60718', incidents.get_open_incident_index(use_cache=True))
 
-    def _report_comment(self, **overrides):
-        comment = {
-            'id': 900,
-            'created_at': '2026-08-11T10:00:00Z',
-            'user': {'login': 'github-actions[bot]'},
-            'issue_url': 'https://api.github.com/repos/freender/homelab-ops/issues/12',
-            'html_url': 'https://github.com/freender/homelab-ops/issues/12#issuecomment-900',
-            'body': '## Verdict\n\nbackup-local points at a retired host.\n\n## Why\n\n...',
-        }
-        comment.update(overrides)
-        return comment
+    REPORT = '## Verdict\nbackup-local points at a retired host.\n\n## Why\n- because\n'
 
-    def _triage_reports(self, comments, state=None):
-        """Run the watcher against a canned comment listing and a temp state file."""
+    def _watch(self, sessions, routes, now=1000.0, comment_status=201):
+        """Run one watcher poll against canned OpenCode routes and a temp state file."""
         incidents = importlib.import_module('modules.incidents')
-        state_path = os.path.join(self.temp_dir.name, 'triage_reports.json')
-        if state is not None:
-            with open(state_path, 'w', encoding='utf-8') as handle:
-                json.dump(state, handle)
-        response = mock.Mock(status_code=200)
-        response.json.return_value = comments
-        with mock.patch.object(incidents, 'TRIAGE_STATE_FILE', state_path), \
-                mock.patch.object(incidents.requests, 'get', return_value=response) as get:
-            found = incidents.find_triage_reports()
-        with open(state_path, encoding='utf-8') as handle:
-            return found, json.load(handle), get
+        with open(incidents.TRIAGE_STATE_FILE, 'w', encoding='utf-8') as handle:
+            json.dump({'sessions': sessions}, handle)
+        handler, calls = self._opencode_api(routes)
+        comment = self._response(comment_status, {
+            'html_url': 'https://github.com/freender/homelab-ops/issues/12#issuecomment-1'})
+        with mock.patch.object(incidents.requests, 'request', side_effect=handler), \
+                mock.patch.object(incidents.requests, 'post', return_value=comment) as post:
+            found = incidents.poll_triage_sessions(now=now)
+        with open(incidents.TRIAGE_STATE_FILE, encoding='utf-8') as handle:
+            return found, json.load(handle)['sessions'], post
 
-    def test_find_triage_reports_announces_nothing_on_the_first_run(self):
-        # Waking up to a notification for every report ever posted would train you to ignore
-        # them. The first run only records where to start looking -- which is also what makes
-        # the rename of the state file safe.
-        found, state, get = self._triage_reports([self._report_comment()])
+    def _finished(self, session_id, outcome='succeeded', text=None):
+        return {
+            ('GET', f'/api/session/{session_id}'): self._response(200, {'data': {'outcome': outcome}}),
+            ('GET', f'/api/session/{session_id}/message'): self._response(200, {'data': [{
+                'type': 'assistant',
+                'content': [{'type': 'reasoning', 'text': 'hmm'},
+                            {'type': 'text', 'text': self.REPORT if text is None else text}],
+            }]}),
+        }
 
-        self.assertEqual(found, [])
-        self.assertTrue(state['since'])
-        get.assert_not_called()
+    def _active(self, *session_ids):
+        return {('GET', '/api/session/active'): self._response(
+            200, {'data': {sid: {'type': 'running'} for sid in session_ids}})}
 
-    def test_find_triage_reports_reports_a_new_report(self):
-        found, state, _ = self._triage_reports(
-            [self._report_comment()],
-            state={'since': '2026-08-11T09:00:00Z', 'seen': []},
-        )
+    def test_poll_posts_the_report_and_stops_watching(self):
+        routes = {**self._active(), **self._finished('ses_aaaaaaaa1111')}
+        found, sessions, post = self._watch(
+            {'ses_aaaaaaaa1111': {'issue': 12, 'started': 900.0}}, routes)
 
         self.assertEqual(len(found), 1)
+        self.assertEqual(found[0]['status'], 'report')
         self.assertEqual(found[0]['issue'], 12)
-        self.assertIn('issuecomment-900', found[0]['url'])
-        self.assertIn(900, state['seen'])
+        self.assertEqual(found[0]['verdict'], 'backup-local points at a retired host.')
+        self.assertIn('issuecomment-1', found[0]['url'])
+        self.assertIn('session=ses_aaaaaaaa1111', found[0]['session_url'])
+        self.assertEqual(sessions, {})
+        body = post.call_args.kwargs['json']['body']
+        self.assertTrue(post.call_args.args[0].endswith('/issues/12/comments'))
+        self.assertTrue(body.startswith('## Verdict'))
+        self.assertIn('ses_aaaaaaaa1111', body)
 
-    def test_find_triage_reports_ignores_a_quoted_heading_from_a_human(self):
-        # Anyone who can comment could otherwise announce a diagnosis nobody produced.
-        found, _, _ = self._triage_reports(
-            [self._report_comment(user={'login': 'freender'})],
-            state={'since': '2026-08-11T09:00:00Z', 'seen': []},
-        )
-
-        self.assertEqual(found, [])
-
-    def test_find_triage_reports_does_not_repeat_an_announced_comment(self):
-        found, _, _ = self._triage_reports(
-            [self._report_comment()],
-            state={'since': '2026-08-11T09:00:00Z', 'seen': [900]},
-        )
+    def test_poll_leaves_a_running_session_alone(self):
+        found, sessions, post = self._watch(
+            {'ses_aaaaaaaa1111': {'issue': 12, 'started': 900.0}}, self._active('ses_aaaaaaaa1111'))
 
         self.assertEqual(found, [])
+        self.assertIn('ses_aaaaaaaa1111', sessions)
+        post.assert_not_called()
 
-    def test_find_triage_reports_ignores_other_flow_comments(self):
-        # The fix flow comments on the same issues as the same author; only a report counts.
-        found, state, _ = self._triage_reports(
-            [self._report_comment(id=901, body='## Fixed\n\n**What I ran** ...')],
-            state={'since': '2026-08-11T09:00:00Z', 'seen': []},
-        )
+    def test_poll_waits_when_the_agent_went_idle_without_a_verdict(self):
+        # An agent waiting on a subagent goes idle and wakes again; that is not the end.
+        routes = {**self._active(), **self._finished('ses_aaaaaaaa1111', text='Waiting on probe.')}
+        found, sessions, post = self._watch(
+            {'ses_aaaaaaaa1111': {'issue': 12, 'started': 900.0}}, routes)
 
         self.assertEqual(found, [])
-        # The window still advances, or a non-matching comment would be re-read forever.
-        self.assertEqual(state['since'], '2026-08-11T10:00:00Z')
+        self.assertIn('ses_aaaaaaaa1111', sessions)
+        post.assert_not_called()
+
+    def test_poll_reports_a_failed_session_on_the_issue(self):
+        routes = {**self._active(), **self._finished('ses_aaaaaaaa1111', outcome='failed', text='')}
+        found, sessions, post = self._watch(
+            {'ses_aaaaaaaa1111': {'issue': 12, 'started': 900.0}}, routes)
+
+        self.assertEqual(found[0]['status'], 'failed')
+        self.assertEqual(sessions, {})
+        self.assertTrue(post.call_args.kwargs['json']['body'].startswith('## Triage failed'))
+
+    def test_poll_times_out_without_writing_to_the_issue(self):
+        # A long-running session may be one the owner took over; the issue is not told.
+        found, sessions, post = self._watch(
+            {'ses_aaaaaaaa1111': {'issue': 12, 'started': 0.0}},
+            self._active('ses_aaaaaaaa1111'), now=100000.0)
+
+        self.assertEqual(found[0]['status'], 'timeout')
+        self.assertEqual(sessions, {})
+        post.assert_not_called()
+
+    def test_poll_drops_an_interrupted_or_deleted_session_quietly(self):
+        routes = {
+            **self._active(),
+            ('GET', '/api/session/ses_aaaaaaaa1111'): self._response(200, {'data': {'outcome': 'interrupted'}}),
+            ('GET', '/api/session/ses_bbbbbbbb2222'): self._response(404),
+        }
+        found, sessions, post = self._watch({
+            'ses_aaaaaaaa1111': {'issue': 12, 'started': 900.0},
+            'ses_bbbbbbbb2222': {'issue': 13, 'started': 900.0},
+        }, routes)
+
+        self.assertEqual(found, [])
+        self.assertEqual(sessions, {})
+        post.assert_not_called()
+
+    def test_poll_keeps_watching_when_opencode_is_unreachable(self):
+        incidents = importlib.import_module('modules.incidents')
+        with open(incidents.TRIAGE_STATE_FILE, 'w', encoding='utf-8') as handle:
+            json.dump({'sessions': {'ses_aaaaaaaa1111': {'issue': 12, 'started': 900.0}}}, handle)
+
+        self.assertEqual(incidents.poll_triage_sessions(now=1000.0), [])
+        with open(incidents.TRIAGE_STATE_FILE, encoding='utf-8') as handle:
+            self.assertIn('ses_aaaaaaaa1111', json.load(handle)['sessions'])
+
+    def test_extract_verdict_stops_at_the_next_heading_and_caps_length(self):
+        incidents = importlib.import_module('modules.incidents')
+
+        self.assertEqual(incidents.extract_verdict(self.REPORT), 'backup-local points at a retired host.')
+        self.assertEqual(incidents.extract_verdict('no heading'), '')
+        long_verdict = incidents.extract_verdict('## Verdict\n' + 'x' * 5000)
+        self.assertEqual(len(long_verdict), incidents.MAX_VERDICT_LENGTH)
 
     def test_find_open_incident_does_not_search_without_a_fingerprint(self):
         incidents = importlib.import_module('modules.incidents')
@@ -516,23 +658,56 @@ class ModulesTest(unittest.TestCase):
 
         get.assert_not_called()
 
-    def test_create_incident_warns_when_triage_trigger_fails(self):
-        issue_response = mock.Mock(status_code=201)
-        issue_response.json.return_value = {
+    def test_create_incident_warns_when_opencode_refuses_the_session(self):
+        created = self._response(201, {
             'number': 7,
             'title': 'plex is down',
             'html_url': 'https://github.com/freender/homelab-ops/issues/7',
-        }
-        comment_response = mock.Mock(status_code=403)
+        })
+        incidents = importlib.import_module('modules.incidents')
+        handler, _ = self._opencode_api({('POST', '/api/session'): self._response(500)})
+
+        with mock.patch.object(incidents.requests, 'post', return_value=created), \
+                mock.patch.object(incidents.requests, 'patch') as patch, \
+                mock.patch.object(incidents.requests, 'request', side_effect=handler):
+            incident, error = self.modules.create_incident('plex is down on tower')
+
+        # The incident is still filed: losing triage must not lose the record.
+        self.assertIsNone(error)
+        self.assertEqual(incident['number'], 7)
+        self.assertIn('500', incident['warning'])
+        self.assertNotIn('session_id', incident)
+        patch.assert_not_called()
+
+    def test_create_incident_keeps_a_session_whose_prompt_was_refused(self):
+        created = self._response(201, {
+            'number': 7, 'title': 'x', 'html_url': 'https://github.com/freender/homelab-ops/issues/7',
+        })
+        incidents = importlib.import_module('modules.incidents')
+        handler, _ = self._opencode_api(self._session_routes(prompt_status=400))
+
+        with mock.patch.object(incidents.requests, 'post', return_value=created), \
+                mock.patch.object(incidents.requests, 'patch', return_value=self._response(200)), \
+                mock.patch.object(incidents.requests, 'request', side_effect=handler):
+            incident, _ = self.modules.create_incident('plex is down on tower')
+
+        # Empty, but the owner can open it and ask by hand; it is not watched for a report.
+        self.assertEqual(incident['session_id'], 'ses_abcdefgh12345678')
+        self.assertIn('400', incident['warning'])
+        self.assertFalse(os.path.exists(incidents.TRIAGE_STATE_FILE))
+
+    def test_create_incident_without_triage_config_still_files(self):
+        created = self._response(201, {
+            'number': 7, 'title': 'x', 'html_url': 'https://github.com/freender/homelab-ops/issues/7',
+        })
         incidents = importlib.import_module('modules.incidents')
 
-        with mock.patch.object(
-            incidents.requests, 'post', side_effect=[issue_response, comment_response]
-        ):
+        with mock.patch.object(incidents.cfg, 'OPENCODE_URL', None), \
+                mock.patch.object(incidents.requests, 'post', return_value=created):
             incident, error = self.modules.create_incident('plex is down on tower')
 
         self.assertIsNone(error)
-        self.assertIn('403', incident['warning'])
+        self.assertIn('not configured', incident['warning'])
 
     def test_parse_seerr_issue_url(self):
         issue_id, error = self.modules.parse_seerr_issue_url('https://seerr.example.com/issues/29')

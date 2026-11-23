@@ -24,9 +24,11 @@ from modules.incidents import (
     build_incident_body,
     build_incident_title,
     create_incident,
-    find_triage_reports,
     get_open_incident_index,
     incident_creation_is_configured,
+    poll_triage_sessions,
+    triage_is_configured,
+    triage_session_url,
 )
 from modules.maintenance import (
     clear_alertmanager_mw_state,

@@ -33,6 +33,10 @@ services:
       - ALERTMANAGER_ALERT_SILENCE_DURATIONS=${ALERTMANAGER_ALERT_SILENCE_DURATIONS} # Optional per-alert silence choices; defaults to 1d,3d,7d
       - GITHUB_INCIDENT_REPO=${GITHUB_INCIDENT_REPO} # Private incident repository
       - GITHUB_INCIDENT_TOKEN=${GITHUB_INCIDENT_TOKEN} # Fine-grained token with Issues write access
+      - OPENCODE_URL=${OPENCODE_URL} # Optional OpenCode server that runs incident triage
+      - OPENCODE_PASSWORD=${OPENCODE_PASSWORD} # Basic-auth password for that server
+      - OPENCODE_INCIDENT_DIRECTORY=${OPENCODE_INCIDENT_DIRECTORY} # Directory the triage session runs in
+      - OPENCHAMBER_PUBLIC_URL=${OPENCHAMBER_PUBLIC_URL} # Browser URL of OpenChamber for session links
       - WAF_TOKEN=${WAF_TOKEN} # Cloudflare WAF API token
       - WAF_ZONE=${WAF_ZONE} # Cloudflare WAF zone ID
       - WAF_RULESET=${WAF_RULESET} # Cloudflare WAF ruleset ID
@@ -63,7 +67,14 @@ services:
 - `ALERTMANAGER_OPEN_MW_DURATION`: Maintenance window safety expiry. Defaults to `12h`.
 - `ALERTMANAGER_ALERT_SILENCE_DURATIONS`: Comma-separated durations offered when silencing one alert, in button order. Defaults to `1d,3d,7d`. Durations use `m`, `h` or `d`.
 - `GITHUB_INCIDENT_REPO`: Private GitHub repository used for incidents. Defaults to `freender/homelab-ops`.
-- `GITHUB_INCIDENT_TOKEN`: Fine-grained token limited to that repository with Issues read/write access.
+- `GITHUB_INCIDENT_TOKEN`: Fine-grained token limited to that repository with Issues read/write access. It files the issue, edits its body to add the triage session link, and posts the triage report.
+- `OPENCODE_URL`: Base URL of the OpenCode server that runs incident triage. Triage is off unless this, `OPENCODE_PASSWORD` and `OPENCODE_INCIDENT_DIRECTORY` are set; incidents are still filed without it.
+- `OPENCODE_USERNAME` / `OPENCODE_PASSWORD`: Basic-auth credentials for that server. The username defaults to `opencode`.
+- `OPENCODE_INCIDENT_DIRECTORY`: Absolute directory on the server the session is created in. It decides which project agents load.
+- `OPENCODE_INCIDENT_AGENT`: Agent the session runs. Defaults to `incident-triage`.
+- `OPENCHAMBER_PUBLIC_URL`: Browser-facing OpenChamber base URL. Session links are `<base>/?session=<id>`; without it the session id is shown but not linked.
+- `OPENCODE_TRIAGE_WATCH_SECONDS`: How often to check for a finished session. Defaults to `60`; `0` disables the report notification.
+- `OPENCODE_TRIAGE_TIMEOUT_SECONDS`: How long a session is watched for a report before MWBot gives up and says so. Defaults to `2700` (45 minutes).
 - `WAF_TOKEN`: The API token for Cloudflare WAF.
 - `WAF_ZONE`: The zone ID for Cloudflare WAF.
 - `WAF_RULESET`: The ruleset ID for Cloudflare WAF.
@@ -95,7 +106,7 @@ services:
    The list footer starts or ends the blanket maintenance window; only the one that applies to the current state is shown.
 3. **Plex Access**: Open the Plex Access section and tap the network-check link. MWBot applies the detected ISP ASN automatically, then updates the same menu with an explicit success or failure result.
 4. **Redownload Control**: Open the Media section and follow the prompts. The bot confirms the target, then blocklists the matching release in Sonarr or Radarr so it is not downloaded again.
-5. **Incidents**: Owner-only, and filed from a firing alert only, reachable from an alert's action sheet. The incident carries the alert's labels, annotations, and firing time. There is no free-text path: this keeps the issue body machine-generated, which is what the triage agent reasons over. The issue is created with the `incident` label, and MWBot posts a `/oc` comment that triggers read-only OpenCode triage in that repository. Filing the same alert twice is refused: the alert fingerprint in the issue body is both the dedup key and what draws `→ #N` on the alert list.
+5. **Incidents**: Owner-only, and filed from a firing alert only, reachable from an alert's action sheet. The incident carries the alert's labels, annotations, and firing time. There is no free-text path: this keeps the issue body machine-generated, which is what the triage agent reasons over. The issue is created with the `incident` label, and MWBot starts a read-only OpenCode triage session for it and replies with an OpenChamber link, so you can follow the investigation or take it over. When the agent writes its `## Verdict`, MWBot posts the report on the issue and sends you the verdict. Filing an alert that is already filed reuses its session. Filing the same alert twice is refused: the alert fingerprint in the issue body is both the dedup key and what draws `→ #N` on the alert list.
 
 ## How Redownload Works
 

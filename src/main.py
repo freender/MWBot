@@ -18,7 +18,6 @@ from modules import (
     delete_network_check,
     disable_asn_to_firewall_rule,
     execute_redownload,
-    find_triage_reports,
     format_duration,
     format_remaining,
     get_firewall_status_text,
@@ -33,11 +32,14 @@ from modules import (
     is_owner_chat_id,
     incident_creation_is_configured,
     network_check_is_configured,
+    poll_triage_sessions,
     register_bot_commands,
     resolve_redownload_issue,
     schedule_fw_task,
     start_alertmanager_mw,
     stop_alertmanager_mw,
+    triage_is_configured,
+    triage_session_url,
     warm_seerr_access_cache,
 )
 
@@ -63,56 +65,66 @@ _pending_alerts = {}
 _home_menu_messages = {}
 
 
-def _announce_triage_report(report):
-    """Tell the owner an incident has been diagnosed, and link to it.
+TRIAGE_STATUS_TEXT = {
+    'failed': 'The session failed before writing a report.',
+    'timeout': 'No report yet, so it is no longer being watched. It may still be running, or you may already have taken it over.',
+}
 
-    The message deliberately carries no fix button. Fixing an incident deploys to homelab
-    hosts, and the triage repo authorises that by requiring a comment from the repository
-    owner on GitHub. MWBot holds an owner token, so a button here would quietly relocate
-    that authority into this chat. See modules/incidents.py for the full reasoning.
+
+def _announce_triage_session(result):
+    """Tell the owner a triage session has a verdict (or never produced one).
+
+    The message carries links and nothing else. Acting on a diagnosis happens in the
+    session, by the owner, where the agent's work is visible; a button here would turn a
+    Telegram tap into an instruction to an agent with a shell on every homelab host.
 
     Sent only to the owner's own chat(s) -- the same identity that gates incident filing,
-    which is what filed the issue in the first place -- and never cfg.CHAT_ID. That is a shared
-    alert-broadcast chat with other people in it, and a prompt to go and authorise a deploy
-    has no business landing where anyone but the owner can read it.
+    which is what started the session in the first place -- and never cfg.CHAT_ID. That is
+    a shared alert-broadcast chat with other people in it, and the verdict describes the
+    homelab's faults in detail.
     """
-    issue = report.get('issue')
+    issue = result.get('issue')
     markup = InlineKeyboardMarkup(row_width=1)
-    if report.get('url'):
-        markup.add(InlineKeyboardButton(f'Read triage on #{issue}', url=report['url']))
+    if result.get('session_url'):
+        markup.add(InlineKeyboardButton('🧭 Open Triage Session', url=result['session_url']))
+    if result.get('url'):
+        markup.add(InlineKeyboardButton(f'Open Incident #{issue}', url=result['url']))
     owner_chat_ids = get_owner_chat_ids()
     if not owner_chat_ids:
         logging.error(
-            'No owner chat id resolved; cannot announce triage report for incident #%s',
+            'No owner chat id resolved; cannot announce triage for incident #%s',
             issue,
         )
         return
-    for chat_id in owner_chat_ids:
-        bot.send_message(
-            chat_id,
-            '🔎 <b>Triage complete</b>\n'
-            f'Incident #{escape(str(issue))} has a report waiting.\n'
-            'Read it, and reply <code>/fix</code> on GitHub if the fix looks right.',
-            reply_markup=markup,
-            parse_mode='HTML',
+    if result.get('status') == 'report':
+        text = (
+            f'🔎 <b>Triage complete</b> · #{escape(str(issue))}\n'
+            + escape(result.get('verdict') or 'The report has no verdict text.')
         )
+    else:
+        text = (
+            f'⚠️ <b>Triage ended without a report</b> · #{escape(str(issue))}\n'
+            + escape(TRIAGE_STATUS_TEXT.get(result.get('status'), 'No report was produced.'))
+        )
+    for chat_id in owner_chat_ids:
+        bot.send_message(chat_id, text, reply_markup=markup, parse_mode='HTML')
 
 
-def watch_triage_reports(shutdown_event=None):
-    """Poll the triage repo for incidents that have been diagnosed. Read-only."""
-    interval = cfg.GITHUB_TRIAGE_WATCH_SECONDS
-    if interval <= 0 or not incident_creation_is_configured():
-        logging.info('Triage-report watcher disabled')
+def watch_triage_sessions(shutdown_event=None):
+    """Poll the OpenCode server for triage sessions that have finished."""
+    interval = cfg.OPENCODE_TRIAGE_WATCH_SECONDS
+    if interval <= 0 or not triage_is_configured() or not incident_creation_is_configured():
+        logging.info('Triage-session watcher disabled')
         return
 
     while shutdown_event is None or not shutdown_event.is_set():
         try:
-            for report in find_triage_reports():
-                logging.info('Triage report posted for incident #%s', report['issue'])
-                _announce_triage_report(report)
+            for result in poll_triage_sessions():
+                logging.info('Triage session for incident #%s ended: %s', result['issue'], result['status'])
+                _announce_triage_session(result)
         except Exception as exc:
             # A watcher that dies takes its notifications with it silently; keep polling.
-            logging.error('Triage-report watch failed: %s', exc, exc_info=True)
+            logging.error('Triage-session watch failed: %s', exc, exc_info=True)
         if shutdown_event is None:
             time.sleep(interval)
         elif shutdown_event.wait(interval):
@@ -123,7 +135,7 @@ def start_background_threads(active_bot):
     scheduler_thread = threading.Thread(target=schedule_fw_task, args=(shutdown_event,), daemon=True)
     scheduler_thread.start()
     triage_watch_thread = threading.Thread(
-        target=watch_triage_reports, args=(shutdown_event,), daemon=True)
+        target=watch_triage_sessions, args=(shutdown_event,), daemon=True)
     triage_watch_thread.start()
 
 
@@ -295,6 +307,8 @@ def _media_result_markup():
 
 def _incident_result_markup(incident=None):
     markup = InlineKeyboardMarkup(row_width=2)
+    if incident and incident.get('session_url'):
+        markup.add(InlineKeyboardButton('🧭 Open Triage Session', url=incident['session_url']))
     if incident and incident.get('url'):
         markup.add(InlineKeyboardButton(f'Open Incident #{incident["number"]}', url=incident['url']))
     markup.add(
@@ -533,6 +547,9 @@ def _show_alert_actions(chat_id, user_id, index_text, message_id=None):
                 f'🔗 Open Incident #{incident["number"]}',
                 url=incident['url'],
             ))
+        session_url = triage_session_url(incident.get('session_id'))
+        if session_url:
+            markup.add(InlineKeyboardButton('🧭 Open Triage Session', url=session_url))
     else:
         markup.add(InlineKeyboardButton(
             '🚨 File Incident',
@@ -616,22 +633,26 @@ def _create_incident_from_telegram(chat_id, summary, fingerprint=None, message_i
     if incident is None:
         _show_incident_result(chat_id, error or 'Unable to create the incident.', message_id=message_id)
         return
+    _show_incident_result(chat_id, _incident_result_text(incident), incident=incident, message_id=message_id)
+
+
+def _incident_result_text(incident):
+    number = incident['number']
     if incident.get('duplicate'):
-        # Nothing was filed and no triage was requested: this alert already has an open
-        # incident.  Say so plainly rather than reporting a creation that did not happen.
-        _show_incident_result(
-            chat_id,
-            f'Already filed as #{incident["number"]}. Nothing new was created.',
-            incident=incident,
-            message_id=message_id,
-        )
-        return
-    _show_incident_result(
-        chat_id,
-        f'Incident #{incident["number"]} created. OpenCode triage is queued.',
-        incident=incident,
-        message_id=message_id,
-    )
+        # Nothing was filed: this alert already has an open incident.  Say so plainly
+        # rather than reporting a creation that did not happen.
+        text = f'Already filed as #{number}. Nothing new was created.'
+        if incident.get('session_reused'):
+            text += ' Its triage session is still open.'
+        elif incident.get('session_id'):
+            text += ' A new triage session was started for it.'
+    else:
+        text = f'Incident #{number} created.'
+        if incident.get('session_id'):
+            text += ' Triage is running; open the session to follow it or take over.'
+    if incident.get('warning'):
+        text += f'\n\n⚠️ {incident["warning"]}'
+    return text
 
 
 def _start_redownload_flow(chat_id, user_id, message_id=None):
