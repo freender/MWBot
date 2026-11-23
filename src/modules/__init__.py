@@ -27,6 +27,7 @@ from modules.incidents import (
     get_open_incident_index,
     incident_creation_is_configured,
     poll_triage_sessions,
+    triage_attach_command,
     triage_is_configured,
     triage_session_url,
 )

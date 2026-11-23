@@ -278,6 +278,15 @@ class MainAuthTest(unittest.TestCase):
         text = args[1] if len(args) > 1 else kwargs.get('text')
         self.assertIn('without a report', text)
 
+    def test_announce_triage_session_prints_the_exo_attach_command(self):
+        self.main._announce_triage_session(self._report())
+        self.main._announce_triage_session(self._report(session_id='ses_x --> <b>'))
+
+        first, second = (args[1] for args, _ in self.main.bot.sent_messages)
+        self.assertIn('<code>o -s ses_abcdefgh12345678</code>', first)
+        # A malformed id is never printed: `-s` would create a session for it.
+        self.assertNotIn('<code>', second)
+
     def test_announce_triage_session_reaches_every_owner_chat(self):
         self.modules._seerr_access_cache.update({
             'authorized_chat_ids': {10, 11, 20},

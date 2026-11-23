@@ -367,6 +367,18 @@ class ModulesTest(unittest.TestCase):
 
         self.assertEqual(incidents.add_session_to_body('body', 'ses_x --> <b>'), 'body')
         self.assertEqual(incidents.triage_session_url('not-a-session'), '')
+        self.assertEqual(incidents.triage_attach_command('ses_x; rm -rf ~'), '')
+
+    def test_add_session_to_body_prints_the_attach_command_on_the_session_line(self):
+        incidents = importlib.import_module('modules.incidents')
+
+        body = incidents.add_session_to_body('body', 'ses_abcdefgh12345678')
+        line = next(line for line in body.splitlines() if line.startswith('Triage session:'))
+        self.assertTrue(line.endswith(' · attach: `o -s ses_abcdefgh12345678`'))
+        # Re-attaching replaces the whole line rather than stacking a second command.
+        again = incidents.add_session_to_body(body, 'ses_newnewnew5678')
+        self.assertEqual(again.count('attach:'), 1)
+        self.assertIn('`o -s ses_newnewnew5678`', again)
 
     def test_triage_session_url_needs_a_public_base(self):
         incidents = importlib.import_module('modules.incidents')

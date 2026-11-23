@@ -79,6 +79,16 @@ def triage_session_url(session_id):
     return f'{base}/?session={session_id}'
 
 
+def triage_attach_command(session_id):
+    """The command that opens a session in the TUI on exo, or '' for a malformed id.
+
+    `o` is exo's attach wrapper for riven's server. `-s` creates a session for an id that
+    does not exist, so only a validated id is ever printed.
+    """
+    session_id = clean_session_id(session_id)
+    return f'o -s {session_id}' if session_id else ''
+
+
 def build_incident_body(summary, fingerprint=None):
     lines = [
         '## Alert',
@@ -110,6 +120,8 @@ def add_session_to_body(body, session_id):
     body = re.sub(r'^Triage session: .*$\n?', '', body, flags=re.MULTILINE).rstrip()
     link = triage_session_url(session_id)
     line = f'Triage session: [`{session_id}`]({link})' if link else f'Triage session: `{session_id}`'
+    # Kept on the one `Triage session:` line so a re-filing still replaces it whole.
+    line += f' · attach: `{triage_attach_command(session_id)}`'
     return f'{body}\n{line}\n{SESSION_MARKER.format(session_id)}'
 
 

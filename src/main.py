@@ -38,6 +38,7 @@ from modules import (
     schedule_fw_task,
     start_alertmanager_mw,
     stop_alertmanager_mw,
+    triage_attach_command,
     triage_is_configured,
     triage_session_url,
     warm_seerr_access_cache,
@@ -69,6 +70,12 @@ TRIAGE_STATUS_TEXT = {
     'failed': 'The session failed before writing a report.',
     'timeout': 'No report yet, so it is no longer being watched. It may still be running, or you may already have taken it over.',
 }
+
+
+def _attach_line(session_id):
+    """A tap-to-copy `o -s <id>` line for opening the session in the TUI from exo."""
+    command = triage_attach_command(session_id)
+    return f'\n\n💻 <code>{escape(command)}</code>' if command else ''
 
 
 def _announce_triage_session(result):
@@ -106,6 +113,7 @@ def _announce_triage_session(result):
             f'⚠️ <b>Triage ended without a report</b> · #{escape(str(issue))}\n'
             + escape(TRIAGE_STATUS_TEXT.get(result.get('status'), 'No report was produced.'))
         )
+    text += _attach_line(result.get('session_id'))
     for chat_id in owner_chat_ids:
         bot.send_message(chat_id, text, reply_markup=markup, parse_mode='HTML')
 
@@ -389,7 +397,7 @@ def _show_media_result(chat_id, text, message_id=None):
 def _show_incident_result(chat_id, text, incident=None, message_id=None):
     _show_menu(
         chat_id,
-        '🚨 <b>Homelab Incident</b>\n' + escape(text),
+        '🚨 <b>Homelab Incident</b>\n' + escape(text) + _attach_line((incident or {}).get('session_id')),
         _incident_result_markup(incident=incident),
         message_id=message_id,
     )
@@ -550,6 +558,7 @@ def _show_alert_actions(chat_id, user_id, index_text, message_id=None):
         session_url = triage_session_url(incident.get('session_id'))
         if session_url:
             markup.add(InlineKeyboardButton('🧭 Open Triage Session', url=session_url))
+        lines[-1] += _attach_line(incident.get('session_id'))
     else:
         markup.add(InlineKeyboardButton(
             '🚨 File Incident',
